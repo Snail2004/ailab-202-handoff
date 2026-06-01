@@ -1,5 +1,6 @@
 import hashlib
 import html
+import posixpath
 import re
 import zipfile
 from datetime import datetime, timezone
@@ -10,7 +11,7 @@ from xml.etree import ElementTree as ET
 
 from config import DATASET_FILES, EXTRACTION_TOOL, PIPELINE_VERSION, SCHEMA_VERSION
 from services.audit_log import log_event
-from services.dataset_io import atomic_write_text, read_json, write_json_atomic, write_jsonl_atomic
+from services.dataset_io import default_review_state, read_json, read_jsonl, write_json_atomic, write_jsonl_atomic
 from services.workspace import ProjectError, ensure_project_dirs, ensure_working_files, find_source_file
 
 
@@ -19,6 +20,30 @@ CHAPTER_RE = re.compile(
     r"eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\b.*)$",
     re.IGNORECASE,
 )
+GUTENBERG_START_RE = re.compile(
+    r"^\*\*\*\s*START OF TH(?:E|IS) PROJECT GUTENBERG EBOOK.*\*\*\*\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+GUTENBERG_END_RE = re.compile(
+    r"^\*\*\*\s*END OF TH(?:E|IS) PROJECT GUTENBERG EBOOK.*\*\*\*\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+FRONT_MATTER_TYPES = {
+    "cover",
+    "toc",
+    "title-page",
+    "titlepage",
+    "copyright-page",
+    "copyright",
+    "dedication",
+    "epigraph",
+    "foreword",
+    "preface",
+    "acknowledgements",
+    "acknowledgments",
+    "colophon",
+    "imprint",
+}
 
 
 class BlockHTMLParser(HTMLParser):
@@ -80,9 +105,20 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def default_metadata(doc_id: str, source_path: Path, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+def default_metadata(
+    doc_id: str,
+    source_path: Path,
+    metadata: dict[str, Any] | None = None,
+    report: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     meta = dict(metadata or {})
-    source_format = source_path.suffix.lower().lstrip(".") or meta.get("source_format") or "txt"
+    source_format = source_path.suffix.lower().lstrip(".") or "txt"
+    declared_format = str(meta.get("source_format") or "").strip().lower()
+    if report is not None and declared_format and declared_format != source_format:
+        report["source_format_mismatch"] = {
+            "declared": declared_format,
+            "actual": source_format,
+        }
     return {
         "title": meta.get("title") or doc_id,
         "author": meta.get("author") or "",
@@ -90,7 +126,7 @@ def default_metadata(doc_id: str, source_path: Path, metadata: dict[str, Any] | 
         "genre": meta.get("genre") or "novel",
         "source_language": "en",
         "target_language": "vi",
-        "source_format": meta.get("source_format") or source_format,
+        "source_format": source_format,
         "license": meta.get("license") or "unknown",
         "license_url": meta.get("license_url") or "",
         "source_url": meta.get("source_url") or "",
@@ -100,6 +136,28 @@ def default_metadata(doc_id: str, source_path: Path, metadata: dict[str, Any] | 
         "pipeline_version": PIPELINE_VERSION,
         "contamination_risk": meta.get("contamination_risk") or "medium",
     }
+
+
+def clean_gutenberg_text(raw: str) -> tuple[str, dict[str, Any]]:
+    report = {
+        "start_marker_found": False,
+        "end_marker_found": False,
+        "removed_prefix_chars": 0,
+        "removed_suffix_chars": 0,
+    }
+    start = GUTENBERG_START_RE.search(raw)
+    text = raw
+    if start:
+        report["start_marker_found"] = True
+        report["removed_prefix_chars"] = start.end()
+        text = raw[start.end():]
+
+    end = GUTENBERG_END_RE.search(text)
+    if end:
+        report["end_marker_found"] = True
+        report["removed_suffix_chars"] = len(text) - end.start()
+        text = text[:end.start()]
+    return text, report
 
 
 def block_type_for(text: str, tag: str | None = None) -> str:
@@ -129,8 +187,11 @@ def make_block(doc_id: str, chapter_id: str, index: int, text: str, btype: str, 
     }
 
 
-def split_txt(raw: str) -> list[dict[str, Any]]:
-    normalized = raw.replace("\r\n", "\n").replace("\r", "\n")
+def split_txt(raw: str, report: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    cleaned, gutenberg_report = clean_gutenberg_text(raw)
+    if report is not None:
+        report["gutenberg"] = gutenberg_report
+    normalized = cleaned.replace("\r\n", "\n").replace("\r", "\n")
     parts = [part.strip() for part in re.split(r"\n\s*\n+", normalized) if part.strip()]
     chapters: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
@@ -169,26 +230,132 @@ def _epub_rootfile(zf: zipfile.ZipFile) -> str:
     return rootfile.attrib["full-path"]
 
 
-def _epub_spine_files(zf: zipfile.ZipFile, rootfile: str) -> list[str]:
+def _epub_path(base: Path, href: str | None) -> str | None:
+    if not href:
+        return None
+    clean_href = html.unescape(href).split("#", 1)[0].replace("\\", "/")
+    if not clean_href:
+        return None
+    joined = (base / clean_href).as_posix()
+    return posixpath.normpath(joined)
+
+
+def _attr_tokens(elem: ET.Element, local_name: str) -> set[str]:
+    values: list[str] = []
+    for key, value in elem.attrib.items():
+        if key == local_name or key.endswith(f"}}{local_name}"):
+            values.append(value)
+    tokens: set[str] = set()
+    for value in values:
+        tokens.update(token.strip().lower() for token in value.split() if token.strip())
+    return tokens
+
+
+def _front_matter_reason(tokens: set[str]) -> str | None:
+    matches = sorted(token for token in tokens if token in FRONT_MATTER_TYPES)
+    if not matches:
+        return None
+    return f"front-matter:{matches[0]}"
+
+
+def _epub_manifest(opf: ET.Element, base: Path) -> dict[str, dict[str, Any]]:
+    manifest: dict[str, dict[str, Any]] = {}
+    for item in opf.findall(".//{*}manifest/{*}item"):
+        item_id = item.attrib.get("id")
+        file_name = _epub_path(base, item.attrib.get("href"))
+        if not item_id or not file_name:
+            continue
+        manifest[item_id] = {
+            "file": file_name,
+            "href": item.attrib.get("href") or "",
+            "media_type": item.attrib.get("media-type") or "",
+            "properties": set((item.attrib.get("properties") or "").lower().split()),
+        }
+    return manifest
+
+
+def _epub_front_matter_files(
+    zf: zipfile.ZipFile,
+    opf: ET.Element,
+    base: Path,
+    manifest: dict[str, dict[str, Any]],
+) -> tuple[dict[str, str], bool]:
+    skipped: dict[str, str] = {}
+    found_metadata = False
+
+    for reference in opf.findall(".//{*}guide/{*}reference"):
+        tokens = set()
+        if reference.attrib.get("type"):
+            tokens.add(reference.attrib["type"].strip().lower())
+        reason = _front_matter_reason(tokens)
+        file_name = _epub_path(base, reference.attrib.get("href"))
+        if file_name and reason:
+            found_metadata = True
+            skipped[file_name] = f"opf-guide:{reason}"
+
+    nav_files = [item["file"] for item in manifest.values() if "nav" in item.get("properties", set())]
+    for nav_file in nav_files:
+        if nav_file not in zf.namelist():
+            continue
+        try:
+            nav_root = ET.fromstring(zf.read(nav_file))
+        except ET.ParseError:
+            continue
+        nav_base = Path(nav_file).parent
+        for nav in nav_root.findall(".//{*}nav"):
+            nav_tokens = _attr_tokens(nav, "type")
+            if "landmarks" not in nav_tokens:
+                continue
+            found_metadata = True
+            for link in nav.findall(".//{*}a"):
+                tokens = _attr_tokens(link, "type") | _attr_tokens(link, "rel")
+                reason = _front_matter_reason(tokens)
+                file_name = _epub_path(nav_base, link.attrib.get("href"))
+                if file_name and reason:
+                    skipped[file_name] = f"nav-landmarks:{reason}"
+
+    return skipped, found_metadata
+
+
+def _epub_spine_entries(zf: zipfile.ZipFile, rootfile: str) -> tuple[list[dict[str, Any]], bool]:
     opf = ET.fromstring(zf.read(rootfile))
     base = Path(rootfile).parent
-    manifest = {
-        item.attrib.get("id"): item.attrib.get("href")
-        for item in opf.findall(".//{*}manifest/{*}item")
-    }
-    files: list[str] = []
+    manifest = _epub_manifest(opf, base)
+    front_matter, found_metadata = _epub_front_matter_files(zf, opf, base, manifest)
+    entries: list[dict[str, Any]] = []
     for itemref in opf.findall(".//{*}spine/{*}itemref"):
-        href = manifest.get(itemref.attrib.get("idref"))
-        if href:
-            files.append(str((base / href).as_posix()))
-    return files
+        item = manifest.get(itemref.attrib.get("idref"))
+        if item:
+            file_name = item["file"]
+            skip_reason = front_matter.get(file_name)
+            if skip_reason is None and "nav" in item.get("properties", set()):
+                skip_reason = "manifest:front-matter:toc"
+                found_metadata = True
+            entries.append({
+                "file": file_name,
+                "skip_reason": skip_reason,
+            })
+    return entries, found_metadata
 
 
-def split_epub(path: Path) -> list[dict[str, Any]]:
+def _epub_spine_files(zf: zipfile.ZipFile, rootfile: str) -> list[str]:
+    entries, _ = _epub_spine_entries(zf, rootfile)
+    return [entry["file"] for entry in entries]
+
+
+def split_epub(path: Path, report: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     chapters: list[dict[str, Any]] = []
+    skipped = report.setdefault("skipped", []) if report is not None else []
     with zipfile.ZipFile(path) as zf:
         rootfile = _epub_rootfile(zf)
-        for file_name in _epub_spine_files(zf, rootfile):
+        entries, found_front_matter_metadata = _epub_spine_entries(zf, rootfile)
+        if report is not None:
+            report["front_matter_metadata"] = found_front_matter_metadata
+        for entry in entries:
+            file_name = entry["file"]
+            if entry.get("skip_reason"):
+                skipped.append({"file": file_name, "reason": entry["skip_reason"]})
+                continue
             if file_name not in zf.namelist():
                 continue
             raw = zf.read(file_name).decode("utf-8", errors="replace")
@@ -243,12 +410,45 @@ def load_project_metadata(project_path: Path) -> dict[str, Any]:
     return {}
 
 
-def write_empty_sidecars(project_path: Path) -> None:
+def write_empty_sidecars(project_path: Path, overwrite: bool = False) -> None:
     canonical = project_path / "canonical"
     for key in ("glossary", "entities", "chapter_summaries", "manual_reference_subset"):
         path = canonical / DATASET_FILES[key]
-        if not path.exists():
+        if overwrite or not path.exists():
             write_jsonl_atomic(path, [])
+
+
+def _annotation_reasons(project_path: Path) -> list[str]:
+    canonical = project_path / "canonical"
+    reasons: list[str] = []
+    for key, label in (
+        ("glossary", "glossary terms"),
+        ("entities", "entities"),
+        ("chapter_summaries", "chapter summaries"),
+        ("manual_reference_subset", "reference translations"),
+    ):
+        path = canonical / DATASET_FILES[key]
+        if read_jsonl(path):
+            reasons.append(label)
+
+    drafts_path = project_path / "working" / "drafts.json"
+    if drafts_path.exists() and read_json(drafts_path).get("references"):
+        reasons.append("reference drafts")
+
+    review_path = project_path / "working" / "review_state.json"
+    if review_path.exists():
+        review_state = read_json(review_path)
+        blocks = review_state.get("blocks", {})
+        if any(value.get("reviewed") for value in blocks.values() if isinstance(value, dict)):
+            reasons.append("reviewed blocks")
+
+    return reasons
+
+
+def _reset_working_after_extract(project_path: Path, document: dict[str, Any], reset_drafts: bool = False) -> None:
+    write_json_atomic(project_path / "working" / "review_state.json", default_review_state(document))
+    if reset_drafts:
+        write_json_atomic(project_path / "working" / "drafts.json", {"references": {}})
 
 
 def write_job(project_path: Path, job: dict[str, Any]) -> None:
@@ -263,7 +463,13 @@ def read_job(project_path: Path, job_id: str) -> dict[str, Any]:
     return read_json(path)
 
 
-def extract_project(project_path: Path, doc_id: str, overwrite: bool = False, user: str = "local") -> dict[str, Any]:
+def extract_project(
+    project_path: Path,
+    doc_id: str,
+    overwrite: bool = False,
+    force: bool = False,
+    user: str = "local",
+) -> dict[str, Any]:
     dirs = ensure_project_dirs(doc_id)
     ensure_working_files(project_path)
     source_path = find_source_file(project_path)
@@ -272,8 +478,33 @@ def extract_project(project_path: Path, doc_id: str, overwrite: bool = False, us
     document_path = dirs["canonical"] / DATASET_FILES["document"]
     if document_path.exists() and not overwrite:
         raise ProjectError("Re-extracting can overwrite current document draft. Confirm overwrite first.")
+    annotation_reasons = _annotation_reasons(project_path) if document_path.exists() else []
+    if document_path.exists() and overwrite and annotation_reasons and not force:
+        raise ProjectError(
+            "annotations_present: re-extract is blocked because existing annotation data depends on current block IDs "
+            f"({', '.join(annotation_reasons)})."
+        )
 
     job_id = f"extract_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    source_format = source_path.suffix.lower().lstrip(".") or "txt"
+    report: dict[str, Any] = {
+        "schema_version": "1.0",
+        "dataset_schema_version": SCHEMA_VERSION,
+        "pipeline_version": PIPELINE_VERSION,
+        "source_file": source_path.name,
+        "source_format": source_format,
+        "generated_at": now_iso(),
+        "gutenberg": {
+            "start_marker_found": False,
+            "end_marker_found": False,
+            "removed_prefix_chars": 0,
+            "removed_suffix_chars": 0,
+        },
+        "front_matter_metadata": False,
+        "skipped": [],
+        "chapters": 0,
+        "blocks": 0,
+    }
     job = {
         "job_id": job_id,
         "type": "extract",
@@ -287,23 +518,38 @@ def extract_project(project_path: Path, doc_id: str, overwrite: bool = False, us
     try:
         if source_path.suffix.lower() == ".txt":
             raw = source_path.read_text(encoding="utf-8", errors="replace")
-            chapters_raw = split_txt(raw)
+            chapters_raw = split_txt(raw, report)
         elif source_path.suffix.lower() == ".epub":
-            chapters_raw = split_epub(source_path)
+            chapters_raw = split_epub(source_path, report)
         else:
             raise ProjectError("Only .txt and .epub sources are supported in MVP.")
-        metadata = default_metadata(doc_id, source_path, load_project_metadata(project_path))
+        metadata = default_metadata(doc_id, source_path, load_project_metadata(project_path), report)
         document = chapters_to_document(doc_id, metadata, chapters_raw)
         write_json_atomic(document_path, document)
-        write_empty_sidecars(project_path)
+        write_empty_sidecars(project_path, overwrite=bool(force and annotation_reasons))
         ensure_working_files(project_path, document)
+        _reset_working_after_extract(project_path, document, reset_drafts=bool(force and annotation_reasons))
+        report["chapters"] = len(document["chapters"])
+        report["blocks"] = sum(len(ch["blocks"]) for ch in document["chapters"])
+        write_json_atomic(project_path / "working" / "extraction_report.json", report)
         job.update({
             "status": "done",
             "finished_at": now_iso(),
             "message": f"Extracted {sum(len(ch['blocks']) for ch in document['chapters'])} blocks in {len(document['chapters'])} chapters",
             "document": {"chapters": len(document["chapters"]), "blocks": sum(len(ch["blocks"]) for ch in document["chapters"])},
+            "extraction_report": {
+                "path": "working/extraction_report.json",
+                "skipped": len(report.get("skipped", [])),
+                "source_format_mismatch": report.get("source_format_mismatch"),
+            },
         })
         write_job(project_path, job)
+        if report.get("source_format_mismatch"):
+            log_event(project_path, "extract_warning", {
+                "job_id": job_id,
+                "warning": "source_format_mismatch",
+                "source_format_mismatch": report["source_format_mismatch"],
+            }, user)
         log_event(project_path, "extract", {"job_id": job_id, "status": "done"}, user)
         return job
     except Exception as exc:

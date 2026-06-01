@@ -98,10 +98,22 @@ def extract(doc_id: str):
     try:
         if not has_project(doc_id):
             return error("missing_project", "Project not found", 404)
-        job = extract_project(get_project_path(doc_id), doc_id, overwrite=bool(payload.get("overwrite")), user=str(payload.get("user") or "local"))
+        job = extract_project(
+            get_project_path(doc_id),
+            doc_id,
+            overwrite=bool(payload.get("overwrite")),
+            force=bool(payload.get("force")),
+            user=str(payload.get("user") or "local"),
+        )
         return ok(job, status=201)
     except ProjectError as exc:
-        code = "confirm_overwrite_required" if "Confirm overwrite" in str(exc) else "extract_error"
+        message = str(exc)
+        if "annotations_present" in message:
+            code = "annotations_present"
+        elif "Confirm overwrite" in message:
+            code = "confirm_overwrite_required"
+        else:
+            code = "extract_error"
         return error(code, str(exc), 400)
 
 

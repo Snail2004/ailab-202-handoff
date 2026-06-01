@@ -50,10 +50,30 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertEqual(extract.status_code, 201)
         return self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
 
+    def _project_root(self, doc_id: str) -> Path:
+        return Path(self.tmp.name) / doc_id
+
+    def _extraction_report(self, doc_id: str) -> dict:
+        return json.loads((self._project_root(doc_id) / "working" / "extraction_report.json").read_text(encoding="utf-8"))
+
+    def _minimal_epub(self, opf: str, files: dict[str, str]) -> BytesIO:
+        epub = BytesIO()
+        with ZipFile(epub, "w") as zf:
+            zf.writestr("mimetype", "application/epub+zip")
+            zf.writestr("META-INF/container.xml", """<?xml version="1.0"?>
+<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+  <rootfiles><rootfile full-path="OPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>""")
+            zf.writestr("OPS/content.opf", opf)
+            for name, content in files.items():
+                zf.writestr(f"OPS/{name}", content)
+        epub.seek(0)
+        return epub
+
     def test_seed_project_and_dataset(self):
         projects = self.client.get("/api/projects").get_json()
         self.assertTrue(projects["ok"])
-        self.assertEqual(projects["data"][0]["doc_id"], "gold_demo_01")
+        self.assertTrue(any(project["doc_id"] == "gold_demo_01" for project in projects["data"]))
 
         dataset = self.client.get("/api/projects/gold_demo_01/dataset").get_json()
         self.assertTrue(dataset["ok"])
@@ -405,6 +425,165 @@ class BackendApiSmokeTest(unittest.TestCase):
         blocked = self.client.post(f"/api/projects/{doc_id}/extract", json={"overwrite": False}).get_json()
         self.assertFalse(blocked["ok"])
         self.assertEqual(blocked["errors"][0]["code"], "confirm_overwrite_required")
+
+    def test_txt_gutenberg_markers_are_stripped_and_reported(self):
+        doc_id = "extract_gutenberg_txt"
+        source = b"""Project Gutenberg header should not survive.
+
+*** START OF THE PROJECT GUTENBERG EBOOK TEST BOOK ***
+
+Chapter 1
+
+Alice arrived.
+
+*** END OF THE PROJECT GUTENBERG EBOOK TEST BOOK ***
+
+Project Gutenberg footer should not survive.
+"""
+        dataset = self._make_txt_project(doc_id, source=source)
+        all_text = "\n".join(block["clean_text"] for block in dataset["blocks"])
+        self.assertIn("Alice arrived.", all_text)
+        self.assertNotIn("Project Gutenberg header should not survive", all_text)
+        self.assertNotIn("Project Gutenberg footer should not survive", all_text)
+        report = self._extraction_report(doc_id)
+        self.assertTrue(report["gutenberg"]["start_marker_found"])
+        self.assertTrue(report["gutenberg"]["end_marker_found"])
+        self.assertEqual(report["source_format"], "txt")
+        self.assertEqual(report["blocks"], len(dataset["blocks"]))
+
+    def test_source_format_uses_actual_extension_and_reports_mismatch(self):
+        doc_id = "extract_format_mismatch"
+        self.client.post("/api/projects", json={
+            "doc_id": doc_id,
+            "metadata": {
+                "title": "Mismatch",
+                "author": "Tester",
+                "source_format": "epub",
+                "license": "public-domain",
+                "contamination_risk": "low",
+            },
+        })
+        self.client.post(
+            f"/api/projects/{doc_id}/source",
+            data={"file": (BytesIO(b"Chapter 1\n\nAlice arrived."), "source.txt")},
+            content_type="multipart/form-data",
+        )
+        extract = self.client.post(f"/api/projects/{doc_id}/extract", json={"overwrite": False, "user": "tester"})
+        self.assertEqual(extract.status_code, 201)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertEqual(dataset["document"]["metadata"]["source_format"], "txt")
+        self.assertEqual(dataset["document"]["metadata"]["pipeline_version"], "0.2.0")
+        report = self._extraction_report(doc_id)
+        self.assertEqual(report["source_format_mismatch"], {"declared": "epub", "actual": "txt"})
+
+    def test_epub_front_matter_guide_entries_are_skipped(self):
+        doc_id = "extract_epub_front_matter"
+        self.client.post("/api/projects", json={
+            "doc_id": doc_id,
+            "metadata": {
+                "title": "Front Matter EPUB",
+                "author": "Tester",
+                "source_format": "epub",
+                "license": "public-domain",
+                "contamination_risk": "low",
+            },
+        })
+        opf = """<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+  <manifest>
+    <item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/>
+    <item id="toc" href="toc.xhtml" media-type="application/xhtml+xml"/>
+    <item id="body" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="cover"/><itemref idref="toc"/><itemref idref="body"/></spine>
+  <guide>
+    <reference type="cover" href="cover.xhtml"/>
+    <reference type="toc" href="toc.xhtml"/>
+  </guide>
+</package>"""
+        epub = self._minimal_epub(opf, {
+            "cover.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Cover</h1><p>Skip me.</p></body></html>""",
+            "toc.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Contents</h1><p>Skip me too.</p></body></html>""",
+            "chapter1.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Chapter One</h1><p>Alice arrived.</p></body></html>""",
+        })
+        self.client.post(
+            f"/api/projects/{doc_id}/source",
+            data={"file": (epub, "source.epub")},
+            content_type="multipart/form-data",
+        )
+        extract = self.client.post(f"/api/projects/{doc_id}/extract", json={"overwrite": False})
+        self.assertEqual(extract.status_code, 201)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertEqual(len(dataset["chapters"]), 1)
+        self.assertEqual(dataset["chapters"][0]["title"], "Chapter One")
+        all_text = "\n".join(block["clean_text"] for block in dataset["blocks"])
+        self.assertIn("Alice arrived.", all_text)
+        self.assertNotIn("Skip me.", all_text)
+        report = self._extraction_report(doc_id)
+        self.assertTrue(report["front_matter_metadata"])
+        self.assertEqual({item["file"] for item in report["skipped"]}, {"OPS/cover.xhtml", "OPS/toc.xhtml"})
+
+    def test_epub_nav_landmarks_entries_are_skipped(self):
+        doc_id = "extract_epub_nav_landmarks"
+        self.client.post("/api/projects", json={
+            "doc_id": doc_id,
+            "metadata": {
+                "title": "Landmarks EPUB",
+                "author": "Tester",
+                "source_format": "epub",
+                "license": "public-domain",
+                "contamination_risk": "low",
+            },
+        })
+        opf = """<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="title" href="title.xhtml" media-type="application/xhtml+xml"/>
+    <item id="body" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="title"/><itemref idref="body"/></spine>
+</package>"""
+        epub = self._minimal_epub(opf, {
+            "nav.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body>
+<nav epub:type="landmarks"><ol><li><a epub:type="titlepage" href="title.xhtml">Title</a></li></ol></nav>
+</body></html>""",
+            "title.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Title Page</h1><p>Skip this title page.</p></body></html>""",
+            "chapter1.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Chapter One</h1><p>Alice arrived.</p></body></html>""",
+        })
+        self.client.post(
+            f"/api/projects/{doc_id}/source",
+            data={"file": (epub, "source.epub")},
+            content_type="multipart/form-data",
+        )
+        extract = self.client.post(f"/api/projects/{doc_id}/extract", json={"overwrite": False})
+        self.assertEqual(extract.status_code, 201)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        all_text = "\n".join(block["clean_text"] for block in dataset["blocks"])
+        self.assertIn("Alice arrived.", all_text)
+        self.assertNotIn("Skip this title page.", all_text)
+        report = self._extraction_report(doc_id)
+        self.assertTrue(report["front_matter_metadata"])
+        self.assertEqual(report["skipped"][0]["file"], "OPS/title.xhtml")
+
+    def test_reextract_is_blocked_when_annotations_exist(self):
+        doc_id = "extract_guard_annotations"
+        dataset = self._make_txt_project(doc_id)
+        block = next(block for block in dataset["blocks"] if "Alice" in block["clean_text"])
+        start = block["clean_text"].index("Alice")
+        response = self.client.post(f"/api/projects/{doc_id}/glossary/from-selection", json={
+            "block_id": block["block_id"],
+            "start": start,
+            "end": start + len("Alice"),
+            "source_term": "Alice",
+            "expected_target": "Alice",
+            "user": "tester",
+        })
+        self.assertEqual(response.status_code, 201)
+
+        blocked = self.client.post(f"/api/projects/{doc_id}/extract", json={"overwrite": True, "user": "tester"})
+        self.assertEqual(blocked.status_code, 400)
+        self.assertEqual(blocked.get_json()["errors"][0]["code"], "annotations_present")
 
     def test_epub_upload_extract_and_validate(self):
         doc_id = "phase3_epub"
