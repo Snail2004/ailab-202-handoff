@@ -235,13 +235,13 @@ const REFERENCES = [
     reference_id: "r0001", block_id: "b0002", stratum: "chapter_opening",
     reference_vi: "L\u00e0 m\u1ed9t s\u1ef1 th\u1eadt ai c\u0169ng c\u00f4ng nh\u1eadn, r\u1eb1ng m\u1ed9t ng\u01b0\u1eddi \u0111\u00e0n \u00f4ng \u0111\u1ed9c th\u00e2n s\u1edf h\u1eefu gia s\u1ea3n l\u1edbn h\u1eb3n ph\u1ea3i \u0111ang thi\u1ebfu m\u1ed9t ng\u01b0\u1eddi v\u1ee3.",
     status: "reviewed", translated_by: "U3 \u00b7 Lan", reviewed_by: "U2 \u00b7 Mai",
-    ai_model: "", canonical: true,
+    source: "human", ai_model: "", canonical: true,
   },
   {
     reference_id: "r0002", block_id: "b0004", stratum: "dialogue",
     reference_vi: "\u201CB\u1ea3n th\u00e2n m\u00ecnh Bennet th\u00e2n m\u1ebfn,\u201D m\u1ed9t h\u00f4m b\u00e0 nh\u00e0 n\u00f3i v\u1edbi \u00f4ng, \u201C\u00f4ng \u0111\u00e3 nghe tin Netherfield Park r\u1ed1t cu\u1ed9c c\u0169ng c\u00f3 ng\u01b0\u1eddi thu\u00ea ch\u01b0a?\u201D",
     status: "draft", translated_by: "U3 \u00b7 Lan", reviewed_by: "",
-    ai_model: "claude-3.5", canonical: false,
+    source: "", ai_model: "claude-3.5", canonical: false,
   },
 ];
 

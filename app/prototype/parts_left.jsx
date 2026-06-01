@@ -1,7 +1,11 @@
 /* ===== LEFT SIDEBAR: project, source status, filters, chapter→block tree ===== */
 
-function ProjectSelector() {
+function ProjectSelector({ onOpenProjectSource }) {
   const [open, setOpen] = React.useState(false);
+  function openProjectSource() {
+    setOpen(false);
+    if (onOpenProjectSource) onOpenProjectSource();
+  }
   return (
     <div className="proj">
       <button className="proj-pick" onClick={() => setOpen(o => !o)}>
@@ -25,13 +29,13 @@ function ProjectSelector() {
               </button>
             ))}
             <div className="divider" />
-            <button className="proj-menu-item"><Ic.folder size={13} className="faint" /><span>Open project folder…</span></button>
-            <button className="proj-menu-item"><Ic.plus size={13} className="faint" /><span>New project from source…</span></button>
+            <button className="proj-menu-item" onClick={openProjectSource}><Ic.folder size={13} className="faint" /><span>Open project folder...</span></button>
+            <button className="proj-menu-item" onClick={openProjectSource}><Ic.plus size={13} className="faint" /><span>New project from source...</span></button>
           </div>
         </>
       )}
       <div className="proj-actions">
-        <button className="btn sm tip" data-tip="Open a local project folder"><Ic.folder size={12} />Open</button>
+        <button className="btn sm tip" data-tip="Open source/project setup" onClick={openProjectSource}><Ic.folder size={12} />Open</button>
         <button className="btn sm tip" data-tip="Write working state to disk"><Ic.save size={12} />Save</button>
         <span className="resume tip" data-tip="Session restored from working/review_state.json">
           <span className="resume-dot" />resumed
@@ -130,10 +134,10 @@ function ChapterTree({ chapters, blocks, review, annoSet, selectedId, onSelect }
   );
 }
 
-function LeftSidebar({ blocks, chapters, review, annoSet, selectedId, onSelect, filters, onToggleFilter, counts, total }) {
+function LeftSidebar({ blocks, chapters, review, annoSet, selectedId, onSelect, filters, onToggleFilter, counts, total, onOpenProjectSource }) {
   return (
     <div className="col col-left">
-      <ProjectSelector />
+      <ProjectSelector onOpenProjectSource={onOpenProjectSource} />
       <div className="divider" />
       <SourceStatus />
       <div className="divider" />

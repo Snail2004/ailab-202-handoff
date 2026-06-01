@@ -42,9 +42,31 @@ pip install -r requirements.txt
 ```powershell
 python validate.py --dataset path/to/<doc_id>
 python validate.py --dataset path/to/<doc_id> --schema path/to/schema
+python validate.py --dataset path/to/<doc_id> --schema path/to/schema --json
 ```
 
 Exit code: `0` = pass, `1` = validation errors, `2` = setup/path/dependency error.
+
+`--json` keeps the same exit codes but emits a machine-readable report for the web tool:
+
+```json
+{
+  "ok": true,
+  "dataset": "path/to/<doc_id>",
+  "counts": {
+    "chapters": 2,
+    "blocks": 14,
+    "terms": 2,
+    "entities": 3,
+    "reference": 3,
+    "summaries": 2
+  },
+  "errors": [],
+  "warnings": []
+}
+```
+
+Each error/warning object has `file`, `location`, `message`, `severity`, and best-effort `block_id` / `chapter_id` when the validator can infer them.
 
 ## Validator Layers
 

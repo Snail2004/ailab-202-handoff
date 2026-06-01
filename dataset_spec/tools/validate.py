@@ -24,7 +24,7 @@ NOTE on scope: schema validation is STRUCTURAL only. Freeze-time requirements
 QC checklist in AILAB_PLAN.md, not enforced here.
 
 Usage:
-    python validate.py --dataset <dataset_dir> [--schema <schema_dir>]
+    python validate.py --dataset <dataset_dir> [--schema <schema_dir>] [--json]
 
 <dataset_dir> contains document.json and (optionally) the .jsonl files.
 Exit code: 0 = pass, 1 = validation errors, 2 = setup/usage error.
@@ -33,6 +33,7 @@ Requires: jsonschema >= 4.18  (Draft 2020-12)
 """
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -45,7 +46,17 @@ for _stream in (sys.stdout, sys.stderr):
 try:
     from jsonschema import Draft202012Validator
 except ImportError:
-    print("ERROR: missing dependency. Install with:  pip install 'jsonschema>=4.18'")
+    msg = "missing dependency. Install with:  pip install 'jsonschema>=4.18'"
+    if "--json" in sys.argv:
+        print(json.dumps({
+            "ok": False,
+            "dataset": None,
+            "counts": {},
+            "errors": [{"file": "-", "location": "-", "message": msg, "severity": "error"}],
+            "warnings": [],
+        }, ensure_ascii=False, indent=2))
+    else:
+        print(f"ERROR: {msg}")
     sys.exit(2)
 
 DATA_FILES = {
@@ -99,17 +110,85 @@ def collect_ids(rows, id_field, fname, errors):
     return ids
 
 
+def best_effort_ids(file_name, location, message):
+    text = f"{location} {message}"
+    found = {}
+    block_patterns = [
+        r"\bblock\s+([A-Za-z0-9_.:-]*b[0-9A-Za-z_.:-]+)\b",
+        r"\b(block_id|block)\s*[:=]\s*([A-Za-z0-9_.:-]*b[0-9A-Za-z_.:-]+)\b",
+    ]
+    chapter_patterns = [
+        r"\bchapter\s+([A-Za-z0-9_.:-]*ch[0-9A-Za-z_.:-]+)\b",
+        r"\b(chapter_id|chapter)\s*[:=]\s*([A-Za-z0-9_.:-]*ch[0-9A-Za-z_.:-]+)\b",
+    ]
+    for pat in block_patterns:
+        m = re.search(pat, text)
+        if m:
+            found["block_id"] = m.group(m.lastindex or 1)
+            break
+    for pat in chapter_patterns:
+        m = re.search(pat, text)
+        if m:
+            found["chapter_id"] = m.group(m.lastindex or 1)
+            break
+    if file_name == "chapter_summaries.jsonl" and "chapter_id" not in found:
+        m = re.search(r"\b([A-Za-z0-9_.:-]*ch[0-9A-Za-z_.:-]+)\b", text)
+        if m:
+            found["chapter_id"] = m.group(1)
+    return found
+
+
+def issue_obj(file_name, location, message, severity="error"):
+    obj = {
+        "file": file_name,
+        "location": str(location),
+        "message": str(message),
+        "severity": severity,
+    }
+    obj.update(best_effort_ids(str(file_name), str(location), str(message)))
+    return obj
+
+
+def warning_obj(message):
+    file_name = "-"
+    for fn in DATA_FILES.values():
+        if str(message).startswith(fn):
+            file_name = fn
+            break
+    return {
+        "file": file_name,
+        "location": "-",
+        "message": str(message),
+        "severity": "warning",
+    }
+
+
+def print_json_report(ok, ds, counts, errors, warnings):
+    print(json.dumps({
+        "ok": ok,
+        "dataset": str(ds) if ds is not None else None,
+        "counts": counts,
+        "errors": [issue_obj(*e) for e in errors],
+        "warnings": [warning_obj(w) for w in warnings],
+    }, ensure_ascii=False, indent=2))
+
+
 def main():
     ap = argparse.ArgumentParser(description="Validate an AILAB dataset folder.")
     ap.add_argument("--dataset", required=True, help="dataset dir (has document.json + jsonl files)")
     ap.add_argument("--schema", default=str(Path(__file__).resolve().parent.parent / "schema"),
                     help="schema dir (default: ../schema next to this script)")
+    ap.add_argument("--json", action="store_true", help="emit machine-readable JSON instead of text")
     args = ap.parse_args()
 
     ds = Path(args.dataset)
     sd = Path(args.schema)
     if not ds.is_dir():
-        print(f"ERROR: dataset dir not found: {ds}")
+        msg = f"dataset dir not found: {ds}"
+        if args.json:
+            print_json_report(False, ds, {}, [("-", "-", msg)], [])
+        else:
+            print(f"ERROR: {msg}")
         sys.exit(2)
 
     # build validators
@@ -117,12 +196,20 @@ def main():
     for key, fn in SCHEMA_FILES.items():
         sp = sd / fn
         if not sp.exists():
-            print(f"ERROR: schema not found: {sp}")
+            msg = f"schema not found: {sp}"
+            if args.json:
+                print_json_report(False, ds, {}, [("-", "-", msg)], [])
+            else:
+                print(f"ERROR: {msg}")
             sys.exit(2)
         try:
             schema = load_json(sp)
         except json.JSONDecodeError as e:
-            print(f"ERROR: schema {fn} is not valid JSON: {e}")
+            msg = f"schema {fn} is not valid JSON: {e}"
+            if args.json:
+                print_json_report(False, ds, {}, [(fn, "-", msg)], [])
+            else:
+                print(f"ERROR: {msg}")
             sys.exit(2)
         validators[key] = Draft202012Validator(schema)
 
@@ -255,11 +342,23 @@ def main():
             errors.append((DATA_FILES["reference"], o.get("reference_id"), f"block_id not in document: {o.get('block_id')}"))
 
     # ---- report ----
+    counts = {
+        "chapters": len(chapter_ids),
+        "blocks": len(block_ids),
+        "terms": len(term_ids),
+        "entities": len(entity_ids),
+        "reference": len(reference_ids),
+        "summaries": len(cs),
+    }
+    if args.json:
+        print_json_report(not errors, ds, counts, errors, warnings)
+        sys.exit(0 if not errors else 1)
+
     print("=" * 64)
     print(f"AILAB dataset validation: {ds}")
-    print(f"  chapters={len(chapter_ids)} blocks={len(block_ids)} "
-          f"terms={len(term_ids)} entities={len(entity_ids)} reference={len(reference_ids)} "
-          f"summaries={len(cs)}")
+    print(f"  chapters={counts['chapters']} blocks={counts['blocks']} "
+          f"terms={counts['terms']} entities={counts['entities']} reference={counts['reference']} "
+          f"summaries={counts['summaries']}")
     for w in warnings:
         print(f"  [warn] {w}")
     if not errors:
