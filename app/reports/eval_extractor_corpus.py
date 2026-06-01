@@ -1,4 +1,4 @@
-"""Evaluate extractor v0.3.1 on the AILAB multi-book corpus.
+"""Evaluate the current extractor on the AILAB multi-book corpus.
 
 This script is intentionally stdlib-only. It verifies the already-downloaded raw
 corpus, creates local app projects through the backend service layer, extracts
@@ -28,8 +28,7 @@ BACKEND_ROOT = APP_ROOT / "backend"
 RAW_ROOT = HANDOFF_ROOT.parent / "AILAB_SOURCES_RAW"
 REPORTS_ROOT = APP_ROOT / "reports"
 GROUND_TRUTH_PATH = REPORTS_ROOT / "ground_truth_chapters.json"
-RESULTS_PATH = REPORTS_ROOT / "eval_results_v0.3.1.json"
-REPORT_PATH = REPORTS_ROOT / "EXTRACTOR_EVAL_v0.3.1.md"
+BASELINE_RESULTS_PATH = REPORTS_ROOT / "eval_results_v0.3.1.json"
 
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
@@ -46,6 +45,10 @@ from services.workspace import (  # noqa: E402
     has_project,
     save_source_file,
 )
+
+
+RESULTS_PATH = REPORTS_ROOT / f"eval_results_v{PIPELINE_VERSION}.json"
+REPORT_PATH = REPORTS_ROOT / f"EXTRACTOR_EVAL_v{PIPELINE_VERSION}.md"
 
 
 EVAL_MARKER_NAME = "eval_corpus_project.json"
@@ -732,12 +735,59 @@ def markdown_table(headers: list[str], rows: list[list[Any]]) -> str:
     return "\n".join(out)
 
 
+def load_baseline_results(current_version: str | None) -> dict[str, Any] | None:
+    if current_version == "0.3.1" or not BASELINE_RESULTS_PATH.exists():
+        return None
+    try:
+        return json.loads(BASELINE_RESULTS_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+
+
+def render_before_after(results: dict[str, Any], baseline: dict[str, Any] | None) -> str:
+    if not baseline:
+        return ""
+    baseline_by_doc = {item["doc_id"]: item for item in baseline.get("items", []) if item.get("doc_id")}
+    rows: list[list[Any]] = []
+    for item in results.get("items", []):
+        old = baseline_by_doc.get(item.get("doc_id"), {})
+        old_toc = old.get("extraction_report", {}).get("toc", {})
+        new_toc = item.get("extraction_report", {}).get("toc", {})
+        rows.append([
+            item.get("doc_id"),
+            old.get("verdict", "-"),
+            item.get("verdict", "-"),
+            old.get("extracted_count", "-"),
+            item.get("extracted_count", "-"),
+            old_toc.get("low_confidence", "-"),
+            new_toc.get("low_confidence", "-"),
+            old_toc.get("match_rate", "-"),
+            new_toc.get("match_rate", "-"),
+        ])
+    return markdown_table(
+        [
+            "doc_id",
+            "v0.3.1 verdict",
+            f"v{results.get('pipeline_version')} verdict",
+            "extracted 0.3.1",
+            f"extracted {results.get('pipeline_version')}",
+            "low_conf 0.3.1",
+            f"low_conf {results.get('pipeline_version')}",
+            "match_rate 0.3.1",
+            f"match_rate {results.get('pipeline_version')}",
+        ],
+        rows,
+    )
+
+
 def render_report(results: dict[str, Any]) -> str:
     lines: list[str] = []
-    lines.append("# EXTRACTOR_EVAL v0.3.1")
+    baseline = load_baseline_results(results.get("pipeline_version"))
+    version = results.get("pipeline_version")
+    lines.append(f"# EXTRACTOR_EVAL v{version}")
     lines.append("")
     lines.append(f"Generated at: `{results['generated_at']}`")
-    lines.append(f"Pipeline version: `{results.get('pipeline_version')}`")
+    lines.append(f"Pipeline version: `{version}`")
     lines.append("")
     lines.append("## Overview")
     matrix_rows = []
@@ -761,6 +811,12 @@ def render_report(results: dict[str, Any]) -> str:
         matrix_rows,
     ))
     lines.append("")
+    before_after = render_before_after(results, baseline)
+    if before_after:
+        lines.append("## Phase 3 Before/After")
+        lines.append("")
+        lines.append(before_after)
+        lines.append("")
     lines.append("## Raw Corpus Verification")
     raw = results.get("raw_verification", {})
     lines.append(f"- Raw root: `{raw.get('raw_root')}`")
@@ -775,6 +831,21 @@ def render_report(results: dict[str, Any]) -> str:
         lines.append(f"- Dataset load OK: `{item.get('dataset_load_ok', False)}`")
         toc = item.get("extraction_report", {}).get("toc", {})
         lines.append(f"- TOC report: `source={toc.get('toc_source')}`, `items={toc.get('toc_items')}`, `matched={toc.get('chapters_matched')}`, `match_rate={toc.get('match_rate')}`, `low_confidence={toc.get('low_confidence')}`, `ambiguous={toc.get('ambiguous_titles')}`")
+        skipped_files = item.get("extraction_report", {}).get("skipped", [])
+        trims = item.get("extraction_report", {}).get("gutenberg", {}).get("epub_body_trimmed", [])
+        heuristic_files = toc.get("heuristic_front_back_files", [])
+        cleanup_bits = [f"skipped={len(skipped_files)}"]
+        if trims:
+            cleanup_bits.append(
+                "epub_body_trimmed="
+                + ", ".join(f"{trim.get('file')} ({trim.get('blocks_removed')} blocks)" for trim in trims)
+            )
+        if heuristic_files:
+            cleanup_bits.append(
+                "heuristic_front_back="
+                + ", ".join(f"{item.get('file')}:{item.get('reason')}" for item in heuristic_files)
+            )
+        lines.append("- Cleanup report: " + "; ".join(cleanup_bits))
         nested_audit = item.get("nested_section_audit", [])
         if nested_audit:
             nested_summary = "; ".join(
@@ -851,7 +922,7 @@ def render_report(results: dict[str, Any]) -> str:
     else:
         lines.append("No automated defects detected.")
     lines.append("")
-    lines.append("## Phase 3 Proposals (Propose-Only)")
+    lines.append("## Phase 3 Before/After Notes")
     proposal_rows = []
     nested_items = [
         item
@@ -862,10 +933,10 @@ def render_report(results: dict[str, Any]) -> str:
         for defect_type, count in sorted(agg.items()):
             proposal_rows.append([
                 defect_type,
-                "review defect evidence before changing extractor",
+                "review residual defect evidence before changing extractor again",
                 f"affects {count} observation(s)",
                 "risk of overfitting held-out corpus",
-                "deferred until user approves v0.3.2",
+                "deferred unless it is a general bug",
             ])
     if nested_items:
         proposal_rows.append([
@@ -896,7 +967,7 @@ def render_report(results: dict[str, Any]) -> str:
     lines.append("## Re-Verify Commands")
     lines.append("```powershell")
     lines.append("cd app\\reports")
-    lines.append("python eval_extractor_corpus.py --allow-draft-ground-truth")
+    lines.append("python eval_extractor_corpus.py --overwrite-eval-projects")
     lines.append("cd ..\\..")
     lines.append("python -m unittest discover app\\backend\\tests")
     lines.append("```")
@@ -906,7 +977,7 @@ def render_report(results: dict[str, Any]) -> str:
     for item in results["items"]:
         verdict_counts[item.get("verdict", "unknown")] = verdict_counts.get(item.get("verdict", "unknown"), 0) + 1
     lines.append(f"Verdict counts: `{verdict_counts}`.")
-    lines.append("Extractor readiness should be decided from the PASS/FLAGGED-OK/FAIL mix above. This report does not modify extractor code.")
+    lines.append("Extractor readiness should be decided from the PASS/FLAGGED-OK/FAIL mix above and the residual defect logs.")
     lines.append("")
     return "\n".join(lines)
 

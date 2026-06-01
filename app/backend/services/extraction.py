@@ -29,21 +29,55 @@ GUTENBERG_END_RE = re.compile(
     r"^\*\*\*\s*END OF TH(?:E|IS) PROJECT GUTENBERG EBOOK.*\*\*\*\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
+EPUB_GUTENBERG_LICENSE_BLOCK_RE = re.compile(
+    r"^\s*(?:"
+    r"\*\*\*\s*(?:START|END) OF TH(?:E|IS) PROJECT GUTENBERG"
+    r"|THE FULL PROJECT GUTENBERG.*LICENSE"
+    r"|This eBook is for the use of anyone anywhere"
+    r")",
+    re.IGNORECASE,
+)
 FRONT_MATTER_TYPES = {
+    "frontmatter",
+    "backmatter",
     "cover",
     "toc",
     "title-page",
     "titlepage",
+    "halftitle",
+    "halftitlepage",
     "copyright-page",
     "copyright",
     "dedication",
     "epigraph",
     "foreword",
     "preface",
+    "introduction",
     "acknowledgements",
     "acknowledgments",
     "colophon",
     "imprint",
+    "endnotes",
+    "uncopyright",
+}
+BODY_MATTER_TYPES = {"bodymatter"}
+FRONT_BACK_TITLE_KEYS = {
+    "titlepage": "titlepage",
+    "title page": "titlepage",
+    "halftitle": "halftitlepage",
+    "halftitlepage": "halftitlepage",
+    "halftitle page": "halftitlepage",
+    "half title": "halftitlepage",
+    "imprint": "imprint",
+    "contents": "toc",
+    "table of contents": "toc",
+    "dedication": "dedication",
+    "epigraph": "epigraph",
+    "preface": "preface",
+    "introduction": "introduction",
+    "colophon": "colophon",
+    "uncopyright": "uncopyright",
+    "endnotes": "endnotes",
 }
 TOC_MATCH_THRESHOLD = 0.6
 TOC_HEADING_RE = re.compile(r"^(contents|table of contents|mục lục)$", re.IGNORECASE)
@@ -425,7 +459,50 @@ def _front_matter_reason(tokens: set[str]) -> str | None:
     matches = sorted(token for token in tokens if token in FRONT_MATTER_TYPES)
     if not matches:
         return None
-    return f"front-matter:{matches[0]}"
+    return matches[0]
+
+
+def _body_matter_reason(tokens: set[str]) -> str | None:
+    matches = sorted(token for token in tokens if token in BODY_MATTER_TYPES)
+    if not matches:
+        return None
+    return matches[0]
+
+
+def _epub_xml_root(zf: zipfile.ZipFile, file_name: str) -> ET.Element | None:
+    if file_name not in zf.namelist():
+        return None
+    try:
+        return ET.fromstring(zf.read(file_name))
+    except ET.ParseError:
+        return None
+
+
+def _epub_document_type_tokens(zf: zipfile.ZipFile, file_name: str) -> set[str]:
+    root = _epub_xml_root(zf, file_name)
+    if root is None:
+        return set()
+    tokens = set(_attr_tokens(root, "type"))
+    body = root.find(".//{*}body")
+    if body is not None:
+        tokens.update(_attr_tokens(body, "type"))
+    return tokens
+
+
+def _epub_document_title(zf: zipfile.ZipFile, file_name: str) -> str:
+    root = _epub_xml_root(zf, file_name)
+    if root is None:
+        return ""
+    for path in (".//{*}title", ".//{*}h1", ".//{*}h2"):
+        title = _element_text(root.find(path))
+        if title:
+            return title
+    return ""
+
+
+def _front_back_title_reason(title: str) -> str | None:
+    key = toc_key(title)
+    return FRONT_BACK_TITLE_KEYS.get(key)
 
 
 def _epub_manifest(opf: ET.Element, base: Path) -> dict[str, dict[str, Any]]:
@@ -529,9 +606,10 @@ def _epub_front_matter_files(
     opf: ET.Element,
     base: Path,
     manifest: dict[str, dict[str, Any]],
-) -> tuple[dict[str, str], bool]:
+) -> tuple[dict[str, str], bool, set[str]]:
     skipped: dict[str, str] = {}
     found_metadata = False
+    bodymatter_files: set[str] = set()
 
     for reference in opf.findall(".//{*}guide/{*}reference"):
         tokens = set()
@@ -541,7 +619,7 @@ def _epub_front_matter_files(
         file_name = _epub_path(base, reference.attrib.get("href"))
         if file_name and reason:
             found_metadata = True
-            skipped[file_name] = f"opf-guide:{reason}"
+            skipped[file_name] = f"opf-guide:front-matter:{reason}"
 
     nav_files = [item["file"] for item in manifest.values() if "nav" in item.get("properties", set())]
     for nav_file in nav_files:
@@ -560,18 +638,21 @@ def _epub_front_matter_files(
             for link in nav.findall(".//{*}a"):
                 tokens = _attr_tokens(link, "type") | _attr_tokens(link, "rel")
                 reason = _front_matter_reason(tokens)
+                body_reason = _body_matter_reason(tokens)
                 file_name = _epub_path(nav_base, link.attrib.get("href"))
                 if file_name and reason:
-                    skipped[file_name] = f"nav-landmarks:{reason}"
+                    skipped[file_name] = f"nav-landmarks:front-matter:{reason}"
+                if file_name and body_reason:
+                    bodymatter_files.add(file_name)
 
-    return skipped, found_metadata
+    return skipped, found_metadata, bodymatter_files
 
 
 def _epub_spine_entries(zf: zipfile.ZipFile, rootfile: str) -> tuple[list[dict[str, Any]], bool]:
     opf = ET.fromstring(zf.read(rootfile))
     base = Path(rootfile).parent
     manifest = _epub_manifest(opf, base)
-    front_matter, found_metadata = _epub_front_matter_files(zf, opf, base, manifest)
+    front_matter, found_metadata, bodymatter_files = _epub_front_matter_files(zf, opf, base, manifest)
     entries: list[dict[str, Any]] = []
     for itemref in opf.findall(".//{*}spine/{*}itemref"):
         item = manifest.get(itemref.attrib.get("idref"))
@@ -581,16 +662,53 @@ def _epub_spine_entries(zf: zipfile.ZipFile, rootfile: str) -> tuple[list[dict[s
             if skip_reason is None and "nav" in item.get("properties", set()):
                 skip_reason = "manifest:front-matter:toc"
                 found_metadata = True
+            if skip_reason is None:
+                tokens = _epub_document_type_tokens(zf, file_name)
+                reason = _front_matter_reason(tokens)
+                if reason:
+                    skip_reason = f"epub-type:front-matter:{reason}"
+                    found_metadata = True
+                elif _body_matter_reason(tokens):
+                    found_metadata = True
+            if skip_reason is None:
+                title_reason = _front_back_title_reason(_epub_document_title(zf, file_name))
+                if title_reason:
+                    skip_reason = f"title-heuristic:front-matter:{title_reason}"
             entries.append({
                 "file": file_name,
                 "skip_reason": skip_reason,
             })
+    bodymatter_indexes = [
+        index
+        for index, entry in enumerate(entries)
+        if entry["file"] in bodymatter_files or _body_matter_reason(_epub_document_type_tokens(zf, entry["file"]))
+    ]
+    if bodymatter_indexes:
+        found_metadata = True
+        first_bodymatter = min(bodymatter_indexes)
+        for index, entry in enumerate(entries[:first_bodymatter]):
+            if entry.get("skip_reason") is None:
+                entry["skip_reason"] = "nav-landmarks:before-bodymatter"
     return entries, found_metadata
 
 
 def _epub_spine_files(zf: zipfile.ZipFile, rootfile: str) -> list[str]:
     entries, _ = _epub_spine_entries(zf, rootfile)
     return [entry["file"] for entry in entries]
+
+
+def _trim_epub_gutenberg_license_blocks(
+    items: list[tuple[str, str]],
+    file_name: str,
+) -> tuple[list[tuple[str, str]], dict[str, Any] | None]:
+    for index, (_, text) in enumerate(items):
+        if EPUB_GUTENBERG_LICENSE_BLOCK_RE.match(text):
+            return items[:index], {
+                "file": file_name,
+                "trigger": text[:120],
+                "blocks_removed": len(items) - index,
+            }
+    return items, None
 
 
 def split_epub(path: Path, report: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -607,9 +725,14 @@ def split_epub(path: Path, report: dict[str, Any] | None = None) -> list[dict[st
             default=-1,
         )
         if toc_entries:
+            skipped_spine_files = {entry["file"] for entry in entries if entry.get("skip_reason")}
             toc_entries = [
                 entry for entry in toc_entries
-                if not is_toc_boilerplate_title(entry["title"]) and spine_index.get(entry["file"], -1) > toc_front_index
+                if (
+                    entry["file"] not in skipped_spine_files
+                    and not is_toc_boilerplate_title(entry["title"])
+                    and spine_index.get(entry["file"], -1) > toc_front_index
+                )
             ]
         title_counts: dict[str, int] = {}
         target_counts: dict[str, int] = {}
@@ -643,6 +766,18 @@ def split_epub(path: Path, report: dict[str, Any] | None = None) -> list[dict[st
             )
         else:
             set_toc_report(report, "none", 0, 0, True, False)
+        if report is not None:
+            heuristic_skips = [
+                entry
+                for entry in entries
+                if str(entry.get("skip_reason") or "").startswith("title-heuristic:")
+            ]
+            if heuristic_skips:
+                report["toc"]["low_confidence"] = True
+                report["toc"]["heuristic_front_back_files"] = [
+                    {"file": entry["file"], "reason": entry["skip_reason"]}
+                    for entry in heuristic_skips
+                ]
         toc_files = {entry["file"] for entry in toc_entries}
         toc_titles_by_file: dict[str, str] = {}
         for entry in toc_entries:
@@ -664,6 +799,9 @@ def split_epub(path: Path, report: dict[str, Any] | None = None) -> list[dict[st
             parser.feed(raw)
             parser.close()
             items = [(block_type_for(text, tag), text) for tag, text in parser.blocks]
+            items, trim_details = _trim_epub_gutenberg_license_blocks(items, file_name)
+            if trim_details and report is not None:
+                report.setdefault("gutenberg", {}).setdefault("epub_body_trimmed", []).append(trim_details)
             if not items:
                 continue
             title_override = toc_titles_by_file.get(file_name) if use_toc else None

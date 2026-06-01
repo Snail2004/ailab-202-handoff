@@ -497,7 +497,7 @@ Project Gutenberg footer should not survive.
         self.assertEqual(extract.status_code, 201)
         dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
         self.assertEqual(dataset["document"]["metadata"]["source_format"], "txt")
-        self.assertEqual(dataset["document"]["metadata"]["pipeline_version"], "0.3.1")
+        self.assertEqual(dataset["document"]["metadata"]["pipeline_version"], "0.3.2")
         report = self._extraction_report(doc_id)
         self.assertEqual(report["source_format_mismatch"], {"declared": "epub", "actual": "txt"})
 
@@ -849,6 +849,143 @@ Bob waited.
         report = self._extraction_report(doc_id)
         self.assertTrue(report["front_matter_metadata"])
         self.assertEqual(report["skipped"][0]["file"], "OPS/title.xhtml")
+
+    def test_epub_type_front_back_bodymatter_are_skipped(self):
+        doc_id = "extract_epub_type_matter"
+        self.client.post("/api/projects", json={
+            "doc_id": doc_id,
+            "metadata": {
+                "title": "Matter EPUB",
+                "author": "Tester",
+                "source_format": "epub",
+                "license": "public-domain",
+                "contamination_risk": "low",
+            },
+        })
+        opf = """<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="front" href="front.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="back" href="back.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="front"/><itemref idref="c1"/><itemref idref="back"/></spine>
+</package>"""
+        epub = self._minimal_epub(opf, {
+            "nav.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body>
+<nav epub:type="toc"><ol>
+  <li><a href="front.xhtml">Titlepage</a></li>
+  <li><a href="chapter1.xhtml">Chapter One</a></li>
+  <li><a href="back.xhtml">Colophon</a></li>
+</ol></nav>
+</body></html>""",
+            "front.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body epub:type="frontmatter"><h1>Titlepage</h1><p>Skip front.</p></body></html>""",
+            "chapter1.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body epub:type="bodymatter z3998:fiction"><h1>Chapter One</h1><p>Alice arrived.</p></body></html>""",
+            "back.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body epub:type="backmatter"><h1>Colophon</h1><p>Skip back.</p></body></html>""",
+        })
+        self.client.post(
+            f"/api/projects/{doc_id}/source",
+            data={"file": (epub, "source.epub")},
+            content_type="multipart/form-data",
+        )
+        extract = self.client.post(f"/api/projects/{doc_id}/extract", json={"overwrite": False})
+        self.assertEqual(extract.status_code, 201)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertEqual([chapter["title"] for chapter in dataset["chapters"]], ["Chapter One"])
+        all_text = "\n".join(block["clean_text"] for block in dataset["blocks"])
+        self.assertIn("Alice arrived.", all_text)
+        self.assertNotIn("Skip front.", all_text)
+        self.assertNotIn("Skip back.", all_text)
+        report = self._extraction_report(doc_id)
+        self.assertTrue(report["front_matter_metadata"])
+        skipped = {item["file"]: item["reason"] for item in report["skipped"]}
+        self.assertIn("OPS/front.xhtml", skipped)
+        self.assertIn("OPS/back.xhtml", skipped)
+        self.assertIn("epub-type:front-matter:frontmatter", skipped["OPS/front.xhtml"])
+        self.assertIn("epub-type:front-matter:backmatter", skipped["OPS/back.xhtml"])
+        self.assertEqual(report["toc"]["toc_items"], 1)
+        self.assertFalse(report["toc"]["low_confidence"])
+
+    def test_epub_gutenberg_body_license_is_trimmed(self):
+        doc_id = "extract_epub_gutenberg_trim"
+        self.client.post("/api/projects", json={
+            "doc_id": doc_id,
+            "metadata": {
+                "title": "Gutenberg Body EPUB",
+                "author": "Tester",
+                "source_format": "epub",
+                "license": "public-domain",
+                "contamination_risk": "low",
+            },
+        })
+        opf = """<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <manifest><item id="c1" href="chapter1.xhtml" media-type="application/xhtml+xml"/></manifest>
+  <spine><itemref idref="c1"/></spine>
+</package>"""
+        epub = self._minimal_epub(opf, {
+            "chapter1.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml"><body>
+<h1>Chapter One</h1>
+<p>Alice arrived before dawn.</p>
+<h1>THE FULL PROJECT GUTENBERG LICENSE</h1>
+<p>Redistribution license text should not become a story block.</p>
+</body></html>""",
+        })
+        self.client.post(
+            f"/api/projects/{doc_id}/source",
+            data={"file": (epub, "source.epub")},
+            content_type="multipart/form-data",
+        )
+        extract = self.client.post(f"/api/projects/{doc_id}/extract", json={"overwrite": False})
+        self.assertEqual(extract.status_code, 201)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        all_text = "\n".join(block["clean_text"] for block in dataset["blocks"])
+        self.assertIn("Alice arrived before dawn.", all_text)
+        self.assertNotIn("Redistribution license text", all_text)
+        self.assertNotIn("THE FULL PROJECT GUTENBERG LICENSE", all_text)
+        report = self._extraction_report(doc_id)
+        trims = report["gutenberg"]["epub_body_trimmed"]
+        self.assertEqual(trims[0]["file"], "OPS/chapter1.xhtml")
+        self.assertEqual(trims[0]["blocks_removed"], 2)
+
+    def test_epub_project_gutenberg_prose_is_not_trimmed(self):
+        doc_id = "extract_epub_gutenberg_prose"
+        self.client.post("/api/projects", json={
+            "doc_id": doc_id,
+            "metadata": {
+                "title": "Gutenberg Prose EPUB",
+                "author": "Tester",
+                "source_format": "epub",
+                "license": "public-domain",
+                "contamination_risk": "low",
+            },
+        })
+        opf = """<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <manifest><item id="c1" href="chapter1.xhtml" media-type="application/xhtml+xml"/></manifest>
+  <spine><itemref idref="c1"/></spine>
+</package>"""
+        epub = self._minimal_epub(opf, {
+            "chapter1.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml"><body>
+<h1>Chapter One</h1>
+<p>The librarian mentioned Project Gutenberg during ordinary dialogue.</p>
+<p>Alice kept reading.</p>
+</body></html>""",
+        })
+        self.client.post(
+            f"/api/projects/{doc_id}/source",
+            data={"file": (epub, "source.epub")},
+            content_type="multipart/form-data",
+        )
+        extract = self.client.post(f"/api/projects/{doc_id}/extract", json={"overwrite": False})
+        self.assertEqual(extract.status_code, 201)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        all_text = "\n".join(block["clean_text"] for block in dataset["blocks"])
+        self.assertIn("Project Gutenberg during ordinary dialogue.", all_text)
+        self.assertIn("Alice kept reading.", all_text)
+        report = self._extraction_report(doc_id)
+        self.assertNotIn("epub_body_trimmed", report.get("gutenberg", {}))
 
     def test_reextract_is_blocked_when_annotations_exist(self):
         doc_id = "extract_guard_annotations"
