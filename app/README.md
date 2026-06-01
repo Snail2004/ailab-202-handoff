@@ -28,3 +28,15 @@ Không phải app dịch, không phải app OCR, không phải PDF layout editor
 | Validation/export | validate, error view, freeze/export |
 | Persistence | autosave, logs, resume |
 
+## UI prototype
+
+`prototype/` chứa bản UI prototype tải từ Claude Design. Đây là wireframe tương tác để tham khảo khi code frontend thật, chưa phải backend hoàn chỉnh.
+
+Chạy xem nhanh:
+
+```powershell
+cd app/prototype
+python -m http.server 8765 --bind 127.0.0.1
+```
+
+Mở `http://127.0.0.1:8765/index.html`.
