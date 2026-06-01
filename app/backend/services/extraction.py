@@ -2,6 +2,7 @@ import hashlib
 import html
 import posixpath
 import re
+import unicodedata
 import zipfile
 from datetime import datetime, timezone
 from html.parser import HTMLParser
@@ -44,6 +45,21 @@ FRONT_MATTER_TYPES = {
     "colophon",
     "imprint",
 }
+TOC_MATCH_THRESHOLD = 0.6
+TOC_HEADING_RE = re.compile(r"^(contents|table of contents|mục lục)$", re.IGNORECASE)
+DOT_LEADER_PAGE_RE = re.compile(r"\s*[.\u2026\u00b7]{2,}\s*\d+\s*$")
+TOC_BOILERPLATE_TITLE_RE = re.compile(r"(project gutenberg|license|full license|contents|table of contents)", re.IGNORECASE)
+
+
+def default_toc_report() -> dict[str, Any]:
+    return {
+        "toc_source": "none",
+        "toc_items": 0,
+        "chapters_matched": 0,
+        "match_rate": 0.0,
+        "fallback_used": True,
+        "low_confidence": False,
+    }
 
 
 class BlockHTMLParser(HTMLParser):
@@ -95,6 +111,43 @@ def now_iso() -> str:
 
 def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", html.unescape(text)).strip()
+
+
+def normalize_toc_title(text: str) -> str:
+    normalized = unicodedata.normalize("NFC", html.unescape(text or ""))
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    normalized = DOT_LEADER_PAGE_RE.sub("", normalized).strip()
+    return normalized
+
+
+def toc_key(text: str) -> str:
+    return normalize_toc_title(text).casefold()
+
+
+def is_toc_boilerplate_title(text: str) -> bool:
+    title = normalize_toc_title(text)
+    return bool(TOC_BOILERPLATE_TITLE_RE.search(title))
+
+
+def set_toc_report(
+    report: dict[str, Any] | None,
+    source: str,
+    toc_items: int,
+    chapters_matched: int,
+    fallback_used: bool,
+    low_confidence: bool,
+) -> None:
+    if report is None:
+        return
+    match_rate = chapters_matched / toc_items if toc_items else 0.0
+    report["toc"] = {
+        "toc_source": source,
+        "toc_items": toc_items,
+        "chapters_matched": chapters_matched,
+        "match_rate": round(match_rate, 4),
+        "fallback_used": fallback_used,
+        "low_confidence": low_confidence,
+    }
 
 
 def sha256_file(path: Path) -> str:
@@ -187,12 +240,24 @@ def make_block(doc_id: str, chapter_id: str, index: int, text: str, btype: str, 
     }
 
 
-def split_txt(raw: str, report: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    cleaned, gutenberg_report = clean_gutenberg_text(raw)
-    if report is not None:
-        report["gutenberg"] = gutenberg_report
+def _txt_parts(cleaned: str) -> list[dict[str, Any]]:
     normalized = cleaned.replace("\r\n", "\n").replace("\r", "\n")
-    parts = [part.strip() for part in re.split(r"\n\s*\n+", normalized) if part.strip()]
+    parts = []
+    for part in re.split(r"\n\s*\n+", normalized):
+        raw_part = part.strip()
+        if not raw_part:
+            continue
+        text = normalize_text(raw_part)
+        if text:
+            parts.append({
+                "raw": raw_part,
+                "text": text,
+                "lines": [normalize_text(line) for line in raw_part.split("\n") if normalize_text(line)],
+            })
+    return parts
+
+
+def _split_txt_legacy(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     chapters: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
 
@@ -202,7 +267,7 @@ def split_txt(raw: str, report: dict[str, Any] | None = None) -> list[dict[str, 
         return chapter
 
     for part in parts:
-        text = normalize_text(part)
+        text = part["text"]
         if not text:
             continue
         if CHAPTER_RE.match(text):
@@ -220,6 +285,91 @@ def split_txt(raw: str, report: dict[str, Any] | None = None) -> list[dict[str, 
         current["items"].append(("paragraph", "Empty source"))
 
     return chapters
+
+
+def _looks_like_toc_entry(text: str) -> bool:
+    value = normalize_toc_title(text)
+    if not value or TOC_HEADING_RE.match(value):
+        return False
+    if len(value) > 120:
+        return False
+    if len(value.split()) > 16:
+        return False
+    if re.search(r"[.!?;]$", value) and len(value.split()) > 8:
+        return False
+    return True
+
+
+def _find_text_toc(parts: list[dict[str, Any]]) -> tuple[int | None, int, list[str]]:
+    toc_index: int | None = None
+    for index, part in enumerate(parts):
+        if TOC_HEADING_RE.match(part["text"]):
+            toc_index = index
+            break
+    if toc_index is None:
+        return None, 0, []
+
+    entries: list[str] = []
+    body_start = toc_index + 1
+    for index in range(toc_index + 1, len(parts)):
+        lines = parts[index]["lines"]
+        candidates = [normalize_toc_title(line) for line in lines if _looks_like_toc_entry(line)]
+        if not candidates:
+            if entries:
+                body_start = index
+                break
+            return toc_index, toc_index + 1, []
+        if entries and len(candidates) != len(lines):
+            body_start = index
+            break
+        if entries and toc_key(candidates[0]) in {toc_key(entry) for entry in entries}:
+            body_start = index
+            break
+        entries.extend(candidates)
+        body_start = index + 1
+    return toc_index, body_start, entries
+
+
+def _split_txt_with_toc(parts: list[dict[str, Any]], entries: list[str], body_start: int) -> tuple[list[dict[str, Any]], int]:
+    expected = [toc_key(entry) for entry in entries]
+    matches: list[tuple[int, str]] = []
+    cursor = 0
+    for index in range(body_start, len(parts)):
+        if cursor >= len(expected):
+            break
+        if toc_key(parts[index]["text"]) == expected[cursor]:
+            matches.append((index, normalize_toc_title(entries[cursor])))
+            cursor += 1
+
+    chapters: list[dict[str, Any]] = []
+    for match_index, (part_index, title) in enumerate(matches):
+        next_part = matches[match_index + 1][0] if match_index + 1 < len(matches) else len(parts)
+        heading_text = parts[part_index]["text"]
+        items = [("heading", heading_text)]
+        for body_index in range(part_index + 1, next_part):
+            text = parts[body_index]["text"]
+            items.append((block_type_for(text), text))
+        chapters.append({"title": title or heading_text, "items": items})
+    return chapters, len(matches)
+
+
+def split_txt(raw: str, report: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    cleaned, gutenberg_report = clean_gutenberg_text(raw)
+    if report is not None:
+        report["gutenberg"] = gutenberg_report
+    parts = _txt_parts(cleaned)
+    _, body_start, toc_entries = _find_text_toc(parts)
+    if toc_entries:
+        toc_chapters, matched = _split_txt_with_toc(parts, toc_entries, body_start)
+        match_rate = matched / len(toc_entries) if toc_entries else 0.0
+        if toc_chapters and match_rate >= TOC_MATCH_THRESHOLD:
+            set_toc_report(report, "text", len(toc_entries), matched, False, False)
+            return toc_chapters
+        set_toc_report(report, "text", len(toc_entries), matched, True, True)
+        return _split_txt_legacy(parts)
+
+    set_toc_report(report, "none", 0, 0, True, False)
+    return _split_txt_legacy(parts)
 
 
 def _epub_rootfile(zf: zipfile.ZipFile) -> str:
@@ -272,6 +422,86 @@ def _epub_manifest(opf: ET.Element, base: Path) -> dict[str, dict[str, Any]]:
             "properties": set((item.attrib.get("properties") or "").lower().split()),
         }
     return manifest
+
+
+def _element_text(elem: ET.Element | None) -> str:
+    if elem is None:
+        return ""
+    return normalize_text(" ".join(elem.itertext()))
+
+
+def _epub_nav_toc_entries(
+    zf: zipfile.ZipFile,
+    manifest: dict[str, dict[str, Any]],
+) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    nav_files = [item["file"] for item in manifest.values() if "nav" in item.get("properties", set())]
+    for nav_file in nav_files:
+        if nav_file not in zf.namelist():
+            continue
+        try:
+            nav_root = ET.fromstring(zf.read(nav_file))
+        except ET.ParseError:
+            continue
+        nav_base = Path(nav_file).parent
+        navs = []
+        fallback_navs = []
+        for nav in nav_root.findall(".//{*}nav"):
+            tokens = _attr_tokens(nav, "type")
+            if "toc" in tokens:
+                navs.append(nav)
+            elif "landmarks" not in tokens and "page-list" not in tokens:
+                fallback_navs.append(nav)
+        for nav in navs or fallback_navs:
+            for link in nav.findall(".//{*}a"):
+                title = _element_text(link)
+                file_name = _epub_path(nav_base, link.attrib.get("href"))
+                if title and file_name:
+                    entries.append({"title": normalize_toc_title(title), "file": file_name})
+        if entries:
+            break
+    return entries
+
+
+def _epub_ncx_toc_entries(
+    zf: zipfile.ZipFile,
+    manifest: dict[str, dict[str, Any]],
+) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    ncx_files = [item["file"] for item in manifest.values() if item.get("media_type") == "application/x-dtbncx+xml"]
+    for ncx_file in ncx_files:
+        if ncx_file not in zf.namelist():
+            continue
+        try:
+            ncx_root = ET.fromstring(zf.read(ncx_file))
+        except ET.ParseError:
+            continue
+        ncx_base = Path(ncx_file).parent
+        for point in ncx_root.findall(".//{*}navPoint"):
+            title = _element_text(point.find(".//{*}navLabel/{*}text"))
+            content = point.find(".//{*}content")
+            file_name = _epub_path(ncx_base, content.attrib.get("src") if content is not None else None)
+            if title and file_name:
+                entries.append({"title": normalize_toc_title(title), "file": file_name})
+        if entries:
+            break
+    return entries
+
+
+def _epub_toc_entries(
+    zf: zipfile.ZipFile,
+    rootfile: str,
+) -> tuple[str, list[dict[str, str]]]:
+    opf = ET.fromstring(zf.read(rootfile))
+    base = Path(rootfile).parent
+    manifest = _epub_manifest(opf, base)
+    nav_entries = _epub_nav_toc_entries(zf, manifest)
+    if nav_entries:
+        return "nav", nav_entries
+    ncx_entries = _epub_ncx_toc_entries(zf, manifest)
+    if ncx_entries:
+        return "ncx", ncx_entries
+    return "none", []
 
 
 def _epub_front_matter_files(
@@ -349,12 +579,38 @@ def split_epub(path: Path, report: dict[str, Any] | None = None) -> list[dict[st
     with zipfile.ZipFile(path) as zf:
         rootfile = _epub_rootfile(zf)
         entries, found_front_matter_metadata = _epub_spine_entries(zf, rootfile)
+        toc_source, toc_entries = _epub_toc_entries(zf, rootfile)
+        spine_files = {entry["file"] for entry in entries}
+        spine_index = {entry["file"]: index for index, entry in enumerate(entries)}
+        toc_front_index = max(
+            (index for index, entry in enumerate(entries) if entry.get("skip_reason") and "toc" in entry["skip_reason"]),
+            default=-1,
+        )
+        if toc_entries:
+            toc_entries = [
+                entry for entry in toc_entries
+                if not is_toc_boilerplate_title(entry["title"]) and spine_index.get(entry["file"], -1) > toc_front_index
+            ]
+        matched_toc_items = sum(1 for entry in toc_entries if entry["file"] in spine_files)
+        toc_match_rate = matched_toc_items / len(toc_entries) if toc_entries else 0.0
+        use_toc = bool(toc_entries) and toc_match_rate >= TOC_MATCH_THRESHOLD
+        if toc_entries:
+            set_toc_report(report, toc_source, len(toc_entries), matched_toc_items, not use_toc, not use_toc)
+        else:
+            set_toc_report(report, "none", 0, 0, True, False)
+        toc_files = {entry["file"] for entry in toc_entries}
+        toc_titles_by_file: dict[str, str] = {}
+        for entry in toc_entries:
+            toc_titles_by_file.setdefault(entry["file"], entry["title"])
         if report is not None:
             report["front_matter_metadata"] = found_front_matter_metadata
         for entry in entries:
             file_name = entry["file"]
             if entry.get("skip_reason"):
                 skipped.append({"file": file_name, "reason": entry["skip_reason"]})
+                continue
+            if use_toc and file_name not in toc_files:
+                skipped.append({"file": file_name, "reason": "not-in-toc"})
                 continue
             if file_name not in zf.namelist():
                 continue
@@ -365,7 +621,8 @@ def split_epub(path: Path, report: dict[str, Any] | None = None) -> list[dict[st
             items = [(block_type_for(text, tag), text) for tag, text in parser.blocks]
             if not items:
                 continue
-            heading = next((text for btype, text in items if btype == "heading"), Path(file_name).stem)
+            title_override = toc_titles_by_file.get(file_name) if use_toc else None
+            heading = title_override or next((text for btype, text in items if btype == "heading"), Path(file_name).stem)
             if not any(btype == "heading" for btype, _ in items):
                 items.insert(0, ("heading", heading))
             chapters.append({"title": heading, "items": items})
@@ -502,6 +759,7 @@ def extract_project(
         },
         "front_matter_metadata": False,
         "skipped": [],
+        "toc": default_toc_report(),
         "chapters": 0,
         "blocks": 0,
     }

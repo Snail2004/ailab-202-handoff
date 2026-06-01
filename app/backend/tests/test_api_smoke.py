@@ -56,6 +56,24 @@ class BackendApiSmokeTest(unittest.TestCase):
     def _extraction_report(self, doc_id: str) -> dict:
         return json.loads((self._project_root(doc_id) / "working" / "extraction_report.json").read_text(encoding="utf-8"))
 
+    def _assert_toc_report(self, report: dict) -> None:
+        self.assertIn("toc", report)
+        for key in ("toc_source", "toc_items", "chapters_matched", "match_rate", "fallback_used", "low_confidence"):
+            self.assertIn(key, report["toc"])
+
+    def _assert_chapter_properties(self, dataset: dict) -> None:
+        previous_order = 0
+        boilerplate = ("INCIDENTAL DAMAGES", "PROJECT GUTENBERG", "FULL PROJECT GUTENBERG")
+        blocks_by_chapter: dict[str, list[dict]] = {}
+        for block in dataset["blocks"]:
+            blocks_by_chapter.setdefault(block["chapter_id"], []).append(block)
+        for chapter in dataset["chapters"]:
+            self.assertTrue(chapter["title"].strip())
+            self.assertGreaterEqual(len(blocks_by_chapter.get(chapter["chapter_id"], [])), 1)
+            self.assertGreater(chapter["order_index"], previous_order)
+            previous_order = chapter["order_index"]
+            self.assertFalse(any(phrase in chapter["title"].upper() for phrase in boilerplate))
+
     def _minimal_epub(self, opf: str, files: dict[str, str]) -> BytesIO:
         epub = BytesIO()
         with ZipFile(epub, "w") as zf:
@@ -472,9 +490,160 @@ Project Gutenberg footer should not survive.
         self.assertEqual(extract.status_code, 201)
         dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
         self.assertEqual(dataset["document"]["metadata"]["source_format"], "txt")
-        self.assertEqual(dataset["document"]["metadata"]["pipeline_version"], "0.2.0")
+        self.assertEqual(dataset["document"]["metadata"]["pipeline_version"], "0.3.0")
         report = self._extraction_report(doc_id)
         self.assertEqual(report["source_format_mismatch"], {"declared": "epub", "actual": "txt"})
+
+    def test_txt_toc_driven_split_ignores_fake_legal_caps(self):
+        doc_id = "extract_txt_toc"
+        source = """Project Gutenberg header.
+
+*** START OF THE PROJECT GUTENBERG EBOOK TEST BOOK ***
+
+Contents
+
+STORY OF THE DOOR
+SEARCH FOR MR. HYDE
+
+STORY OF THE DOOR
+
+Alice arrived.
+
+INCIDENTAL DAMAGES EVEN IF YOU GIVE NOTICE OF THE POSSIBILITY OF SUCH DAMAGE.
+
+SEARCH FOR MR. HYDE
+
+Bob waited.
+
+*** END OF THE PROJECT GUTENBERG EBOOK TEST BOOK ***
+""".encode("utf-8")
+        dataset = self._make_txt_project(doc_id, source=source)
+        self.assertEqual([chapter["title"] for chapter in dataset["chapters"]], ["STORY OF THE DOOR", "SEARCH FOR MR. HYDE"])
+        self._assert_chapter_properties(dataset)
+        report = self._extraction_report(doc_id)
+        self._assert_toc_report(report)
+        self.assertEqual(report["toc"]["toc_source"], "text")
+        self.assertEqual(report["toc"]["toc_items"], 2)
+        self.assertEqual(report["toc"]["chapters_matched"], 2)
+        self.assertEqual(report["toc"]["match_rate"], 1.0)
+        self.assertFalse(report["toc"]["fallback_used"])
+
+    def test_txt_no_toc_falls_back_without_crashing(self):
+        doc_id = "extract_txt_no_toc"
+        dataset = self._make_txt_project(doc_id, source=b"Opening page\n\nAlice arrived.\n\nBob waited.")
+        self.assertEqual(len(dataset["chapters"]), 1)
+        self._assert_chapter_properties(dataset)
+        report = self._extraction_report(doc_id)
+        self._assert_toc_report(report)
+        self.assertEqual(report["toc"]["toc_source"], "none")
+        self.assertTrue(report["toc"]["fallback_used"])
+        self.assertFalse(report["toc"]["low_confidence"])
+
+    def test_txt_low_toc_match_uses_legacy_fallback(self):
+        doc_id = "extract_txt_low_toc"
+        source = b"""Contents
+
+STORY ONE
+STORY TWO
+
+STORY ONE
+
+Alice arrived.
+"""
+        dataset = self._make_txt_project(doc_id, source=source)
+        self.assertEqual(len(dataset["chapters"]), 1)
+        report = self._extraction_report(doc_id)
+        self._assert_toc_report(report)
+        self.assertEqual(report["toc"]["toc_source"], "text")
+        self.assertEqual(report["toc"]["toc_items"], 2)
+        self.assertEqual(report["toc"]["chapters_matched"], 1)
+        self.assertTrue(report["toc"]["fallback_used"])
+        self.assertTrue(report["toc"]["low_confidence"])
+
+    def test_epub_ncx_toc_names_chapters_and_skips_non_toc_spine(self):
+        doc_id = "extract_epub_ncx_toc"
+        self.client.post("/api/projects", json={
+            "doc_id": doc_id,
+            "metadata": {
+                "title": "NCX EPUB",
+                "author": "Tester",
+                "source_format": "epub",
+                "license": "public-domain",
+                "contamination_risk": "low",
+            },
+        })
+        opf = """<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+  <manifest>
+    <item id="toc" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="ad" href="ad.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c2" href="c2.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine toc="toc"><itemref idref="ad"/><itemref idref="c1"/><itemref idref="c2"/></spine>
+</package>"""
+        epub = self._minimal_epub(opf, {
+            "toc.ncx": """<?xml version="1.0"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap>
+<navPoint id="n1" playOrder="1"><navLabel><text>Story One</text></navLabel><content src="c1.xhtml"/></navPoint>
+<navPoint id="n2" playOrder="2"><navLabel><text>Story Two</text></navLabel><content src="c2.xhtml"/></navPoint>
+</navMap></ncx>""",
+            "ad.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Advertisement</h1><p>Skip me.</p></body></html>""",
+            "c1.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Alice arrived.</p></body></html>""",
+            "c2.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Bob waited.</p></body></html>""",
+        })
+        self.client.post(f"/api/projects/{doc_id}/source", data={"file": (epub, "source.epub")}, content_type="multipart/form-data")
+        extract = self.client.post(f"/api/projects/{doc_id}/extract", json={"overwrite": False})
+        self.assertEqual(extract.status_code, 201)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertEqual([chapter["title"] for chapter in dataset["chapters"]], ["Story One", "Story Two"])
+        self._assert_chapter_properties(dataset)
+        all_text = "\n".join(block["clean_text"] for block in dataset["blocks"])
+        self.assertNotIn("Skip me.", all_text)
+        report = self._extraction_report(doc_id)
+        self._assert_toc_report(report)
+        self.assertEqual(report["toc"]["toc_source"], "ncx")
+        self.assertFalse(report["toc"]["fallback_used"])
+        self.assertIn({"file": "OPS/ad.xhtml", "reason": "not-in-toc"}, report["skipped"])
+
+    def test_epub_nav_toc_names_chapters(self):
+        doc_id = "extract_epub_nav_toc"
+        self.client.post("/api/projects", json={
+            "doc_id": doc_id,
+            "metadata": {
+                "title": "Nav EPUB",
+                "author": "Tester",
+                "source_format": "epub",
+                "license": "public-domain",
+                "contamination_risk": "low",
+            },
+        })
+        opf = """<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c2" href="c2.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="c1"/><itemref idref="c2"/></spine>
+</package>"""
+        epub = self._minimal_epub(opf, {
+            "nav.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body>
+<nav epub:type="toc"><ol><li><a href="c1.xhtml">Chapter Alpha</a></li><li><a href="c2.xhtml">Chapter Beta</a></li></ol></nav>
+</body></html>""",
+            "c1.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Alice arrived.</p></body></html>""",
+            "c2.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Bob waited.</p></body></html>""",
+        })
+        self.client.post(f"/api/projects/{doc_id}/source", data={"file": (epub, "source.epub")}, content_type="multipart/form-data")
+        extract = self.client.post(f"/api/projects/{doc_id}/extract", json={"overwrite": False})
+        self.assertEqual(extract.status_code, 201)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertEqual([chapter["title"] for chapter in dataset["chapters"]], ["Chapter Alpha", "Chapter Beta"])
+        self._assert_chapter_properties(dataset)
+        report = self._extraction_report(doc_id)
+        self._assert_toc_report(report)
+        self.assertEqual(report["toc"]["toc_source"], "nav")
+        self.assertFalse(report["toc"]["fallback_used"])
 
     def test_epub_front_matter_guide_entries_are_skipped(self):
         doc_id = "extract_epub_front_matter"
@@ -623,6 +792,10 @@ Project Gutenberg footer should not survive.
         dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
         self.assertEqual(len(dataset["chapters"]), 1)
         self.assertTrue(any(block["block_type"] == "dialogue" for block in dataset["blocks"]))
+        report = self._extraction_report(doc_id)
+        self._assert_toc_report(report)
+        self.assertEqual(report["toc"]["toc_source"], "none")
+        self.assertTrue(report["toc"]["fallback_used"])
         validate = self.client.post(f"/api/projects/{doc_id}/validate").get_json()
         self.assertTrue(validate["data"]["ok"])
 
