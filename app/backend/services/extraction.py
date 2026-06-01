@@ -103,16 +103,24 @@ class BlockHTMLParser(HTMLParser):
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        self.blocks: list[tuple[str, str]] = []
+        self.blocks: list[dict[str, str | None]] = []
         self._tag_stack: list[str] = []
         self._current_tag: str | None = None
+        self._current_anchor: str | None = None
+        self._pending_anchor: str | None = None
         self._chunks: list[str] = []
 
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
+        attrs_map = {name.lower(): value for name, value in attrs}
+        anchor = attrs_map.get("id") or attrs_map.get("name")
+        if anchor and not self._current_tag:
+            self._pending_anchor = normalize_anchor(anchor)
         if tag in self.block_tags:
             self._flush()
             self._current_tag = tag
+            self._current_anchor = self._pending_anchor
+            self._pending_anchor = None
             self._chunks = []
         self._tag_stack.append(tag)
 
@@ -132,8 +140,13 @@ class BlockHTMLParser(HTMLParser):
             return
         text = normalize_text(" ".join(self._chunks))
         if text:
-            self.blocks.append((self._current_tag, text))
+            self.blocks.append({
+                "tag": self._current_tag,
+                "text": text,
+                "anchor": self._current_anchor,
+            })
         self._current_tag = None
+        self._current_anchor = None
         self._chunks = []
 
     def close(self):
@@ -156,6 +169,10 @@ def normalize_toc_title(text: str) -> str:
     return normalized
 
 
+def normalize_anchor(anchor: str | None) -> str:
+    return unicodedata.normalize("NFC", html.unescape(anchor or "")).strip()
+
+
 def toc_key(text: str) -> str:
     return normalize_toc_title(text).casefold()
 
@@ -163,6 +180,15 @@ def toc_key(text: str) -> str:
 def is_toc_boilerplate_title(text: str) -> bool:
     title = normalize_toc_title(text)
     return bool(TOC_BOILERPLATE_TITLE_RE.search(title))
+
+
+def is_work_title_toc_entry(text: str, package_titles: set[str]) -> bool:
+    key = toc_key(text)
+    for title in package_titles:
+        title_key = toc_key(title)
+        if len(title_key) >= 8 and (key == title_key or key.startswith(f"{title_key} by ")):
+            return True
+    return False
 
 
 def set_toc_report(
@@ -256,7 +282,7 @@ def clean_gutenberg_text(raw: str) -> tuple[str, dict[str, Any]]:
     return text, report
 
 
-def block_type_for(text: str, tag: str | None = None) -> str:
+def _legacy_block_type_for(text: str, tag: str | None = None) -> str:
     lowered = text.lower()
     if tag in {"h1", "h2", "h3"} or CHAPTER_RE.match(text):
         return "heading"
@@ -264,6 +290,44 @@ def block_type_for(text: str, tag: str | None = None) -> str:
         return "footnote"
     quote_count = text.count('"') + text.count("“") + text.count("”")
     if text.startswith(('"', "“", "'")) or quote_count >= 2:
+        return "dialogue"
+    return "paragraph"
+
+
+OPENING_QUOTE_CHARS = {'"', "'", "\u201c", "\u2018"}
+QUOTE_CHARS = {'"', "'", "\u201c", "\u201d", "\u2018", "\u2019"}
+
+
+def _quoted_ratio(text: str) -> float:
+    quoted = 0
+    in_quote = False
+    for char in text:
+        if char in QUOTE_CHARS:
+            in_quote = not in_quote
+            continue
+        if in_quote and not char.isspace():
+            quoted += 1
+    total = sum(1 for char in text if not char.isspace())
+    return quoted / total if total else 0.0
+
+
+def _is_dialogue_like(text: str) -> bool:
+    stripped = text.lstrip()
+    if not stripped:
+        return False
+    if stripped[0] in OPENING_QUOTE_CHARS:
+        return True
+    quote_count = sum(text.count(char) for char in QUOTE_CHARS)
+    return quote_count >= 2 and _quoted_ratio(text) >= 0.6
+
+
+def block_type_for(text: str, tag: str | None = None) -> str:
+    lowered = text.lower()
+    if tag in {"h1", "h2", "h3"} or CHAPTER_RE.match(text):
+        return "heading"
+    if lowered.startswith("[editor") or lowered.startswith("[translator") or lowered.startswith("note:"):
+        return "footnote"
+    if _is_dialogue_like(text):
         return "dialogue"
     return "paragraph"
 
@@ -434,14 +498,23 @@ def _epub_rootfile(zf: zipfile.ZipFile) -> str:
     return rootfile.attrib["full-path"]
 
 
-def _epub_path(base: Path, href: str | None) -> str | None:
+def _epub_href_target(base: Path, href: str | None) -> dict[str, str] | None:
     if not href:
         return None
-    clean_href = html.unescape(href).split("#", 1)[0].replace("\\", "/")
+    clean_href, _, raw_anchor = html.unescape(href).partition("#")
+    clean_href = clean_href.replace("\\", "/")
     if not clean_href:
         return None
     joined = (base / clean_href).as_posix()
-    return posixpath.normpath(joined)
+    return {
+        "file": posixpath.normpath(joined),
+        "anchor": normalize_anchor(raw_anchor),
+    }
+
+
+def _epub_path(base: Path, href: str | None) -> str | None:
+    target = _epub_href_target(base, href)
+    return target["file"] if target else None
 
 
 def _attr_tokens(elem: ET.Element, local_name: str) -> set[str]:
@@ -527,6 +600,16 @@ def _element_text(elem: ET.Element | None) -> str:
     return normalize_text(" ".join(elem.itertext()))
 
 
+def _epub_package_titles(zf: zipfile.ZipFile, rootfile: str) -> set[str]:
+    opf = ET.fromstring(zf.read(rootfile))
+    titles = {
+        normalize_toc_title(_element_text(title))
+        for title in opf.findall(".//{*}metadata/{*}title")
+        if _element_text(title)
+    }
+    return titles
+
+
 def _epub_nav_toc_entries(
     zf: zipfile.ZipFile,
     manifest: dict[str, dict[str, Any]],
@@ -552,9 +635,13 @@ def _epub_nav_toc_entries(
         for nav in navs or fallback_navs:
             for link in nav.findall(".//{*}a"):
                 title = _element_text(link)
-                file_name = _epub_path(nav_base, link.attrib.get("href"))
-                if title and file_name:
-                    entries.append({"title": normalize_toc_title(title), "file": file_name})
+                target = _epub_href_target(nav_base, link.attrib.get("href"))
+                if title and target:
+                    entries.append({
+                        "title": normalize_toc_title(title),
+                        "file": target["file"],
+                        "anchor": target["anchor"],
+                    })
         if entries:
             break
     return entries
@@ -577,9 +664,13 @@ def _epub_ncx_toc_entries(
         for point in ncx_root.findall(".//{*}navPoint"):
             title = _element_text(point.find(".//{*}navLabel/{*}text"))
             content = point.find(".//{*}content")
-            file_name = _epub_path(ncx_base, content.attrib.get("src") if content is not None else None)
-            if title and file_name:
-                entries.append({"title": normalize_toc_title(title), "file": file_name})
+            target = _epub_href_target(ncx_base, content.attrib.get("src") if content is not None else None)
+            if title and target:
+                entries.append({
+                    "title": normalize_toc_title(title),
+                    "file": target["file"],
+                    "anchor": target["anchor"],
+                })
         if entries:
             break
     return entries
@@ -698,10 +789,11 @@ def _epub_spine_files(zf: zipfile.ZipFile, rootfile: str) -> list[str]:
 
 
 def _trim_epub_gutenberg_license_blocks(
-    items: list[tuple[str, str]],
+    items: list[dict[str, str | None]],
     file_name: str,
-) -> tuple[list[tuple[str, str]], dict[str, Any] | None]:
-    for index, (_, text) in enumerate(items):
+) -> tuple[list[dict[str, str | None]], dict[str, Any] | None]:
+    for index, item in enumerate(items):
+        text = str(item.get("text") or "")
         if EPUB_GUTENBERG_LICENSE_BLOCK_RE.match(text):
             return items[:index], {
                 "file": file_name,
@@ -711,11 +803,72 @@ def _trim_epub_gutenberg_license_blocks(
     return items, None
 
 
+def _items_to_chapter_items(items: list[dict[str, str | None]]) -> list[tuple[str, str]]:
+    return [
+        (str(item.get("btype") or "paragraph"), str(item.get("text") or ""))
+        for item in items
+        if item.get("text")
+    ]
+
+
+def _anchor_indexes(items: list[dict[str, str | None]]) -> dict[str, int]:
+    indexes: dict[str, int] = {}
+    for index, item in enumerate(items):
+        anchor = normalize_anchor(str(item.get("anchor") or ""))
+        if anchor and anchor not in indexes:
+            indexes[anchor] = index
+    return indexes
+
+
+def _split_epub_items_by_anchors(
+    items: list[dict[str, str | None]],
+    toc_entries: list[dict[str, str]],
+    file_name: str,
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
+    if len(toc_entries) <= 1:
+        return None, None
+    indexes = _anchor_indexes(items)
+    missing: list[dict[str, str]] = []
+    starts: list[int] = []
+    for entry_index, entry in enumerate(toc_entries):
+        anchor = entry.get("anchor") or ""
+        if anchor and anchor in indexes:
+            starts.append(indexes[anchor])
+        elif not anchor and entry_index == 0:
+            starts.append(0)
+        else:
+            missing.append({"title": entry["title"], "anchor": anchor})
+    if missing:
+        return None, {
+            "file": file_name,
+            "reason": "missing-anchor",
+            "missing": missing,
+        }
+
+    chapters: list[dict[str, Any]] = []
+    for entry_index, entry in enumerate(toc_entries):
+        start = starts[entry_index]
+        end = starts[entry_index + 1] if entry_index + 1 < len(starts) else len(items)
+        section_items = items[start:end]
+        if not section_items:
+            continue
+        title = entry["title"]
+        chapter_items = _items_to_chapter_items(section_items)
+        if not any(btype == "heading" for btype, _ in chapter_items):
+            chapter_items.insert(0, ("heading", title))
+        chapters.append({
+            "title": title,
+            "items": chapter_items,
+        })
+    return chapters, None
+
+
 def split_epub(path: Path, report: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     chapters: list[dict[str, Any]] = []
     skipped = report.setdefault("skipped", []) if report is not None else []
     with zipfile.ZipFile(path) as zf:
         rootfile = _epub_rootfile(zf)
+        package_titles = _epub_package_titles(zf, rootfile)
         entries, found_front_matter_metadata = _epub_spine_entries(zf, rootfile)
         toc_source, toc_entries = _epub_toc_entries(zf, rootfile)
         spine_files = {entry["file"] for entry in entries}
@@ -725,26 +878,44 @@ def split_epub(path: Path, report: dict[str, Any] | None = None) -> list[dict[st
             default=-1,
         )
         if toc_entries:
-            skipped_spine_files = {entry["file"] for entry in entries if entry.get("skip_reason")}
+            skipped_spine_reasons = {
+                entry["file"]: entry["skip_reason"]
+                for entry in entries
+                if entry.get("skip_reason")
+            }
             toc_entries = [
                 entry for entry in toc_entries
                 if (
-                    entry["file"] not in skipped_spine_files
+                    (
+                        entry["file"] not in skipped_spine_reasons
+                        or (
+                            "toc" in str(skipped_spine_reasons.get(entry["file"]))
+                            and bool(entry.get("anchor"))
+                        )
+                    )
                     and not is_toc_boilerplate_title(entry["title"])
-                    and spine_index.get(entry["file"], -1) > toc_front_index
+                    and not is_work_title_toc_entry(entry["title"], package_titles)
+                    and (
+                        spine_index.get(entry["file"], -1) > toc_front_index
+                        or (
+                            "toc" in str(skipped_spine_reasons.get(entry["file"]))
+                            and bool(entry.get("anchor"))
+                        )
+                    )
                 )
             ]
         title_counts: dict[str, int] = {}
         target_counts: dict[str, int] = {}
         for entry in toc_entries:
             title_counts[toc_key(entry["title"])] = title_counts.get(toc_key(entry["title"]), 0) + 1
-            target_counts[entry["file"]] = target_counts.get(entry["file"], 0) + 1
+            target_key = f"{entry['file']}#{entry.get('anchor') or ''}"
+            target_counts[target_key] = target_counts.get(target_key, 0) + 1
         duplicate_titles = sorted({
             normalize_toc_title(entry["title"])
             for entry in toc_entries
             if title_counts.get(toc_key(entry["title"]), 0) > 1
         })
-        duplicate_targets = sorted(file_name for file_name, count in target_counts.items() if count > 1)
+        duplicate_targets = sorted(target for target, count in target_counts.items() if count > 1)
         unresolved_targets = sorted({entry["file"] for entry in toc_entries if entry["file"] not in spine_files})
         matched_toc_items = sum(1 for entry in toc_entries if entry["file"] in spine_files)
         toc_match_rate = matched_toc_items / len(toc_entries) if toc_entries else 0.0
@@ -780,13 +951,18 @@ def split_epub(path: Path, report: dict[str, Any] | None = None) -> list[dict[st
                 ]
         toc_files = {entry["file"] for entry in toc_entries}
         toc_titles_by_file: dict[str, str] = {}
+        toc_entries_by_file: dict[str, list[dict[str, str]]] = {}
         for entry in toc_entries:
             toc_titles_by_file.setdefault(entry["file"], entry["title"])
+            toc_entries_by_file.setdefault(entry["file"], []).append(entry)
         if report is not None:
             report["front_matter_metadata"] = found_front_matter_metadata
         for entry in entries:
             file_name = entry["file"]
-            if entry.get("skip_reason"):
+            file_toc_entries = toc_entries_by_file.get(file_name, []) if use_toc else []
+            if entry.get("skip_reason") and not (
+                "toc" in str(entry.get("skip_reason")) and file_toc_entries
+            ):
                 skipped.append({"file": file_name, "reason": entry["skip_reason"]})
                 continue
             if use_toc and file_name not in toc_files:
@@ -798,17 +974,32 @@ def split_epub(path: Path, report: dict[str, Any] | None = None) -> list[dict[st
             parser = BlockHTMLParser()
             parser.feed(raw)
             parser.close()
-            items = [(block_type_for(text, tag), text) for tag, text in parser.blocks]
+            items = [
+                {
+                    "btype": block_type_for(str(block["text"]), str(block["tag"])),
+                    "text": str(block["text"]),
+                    "anchor": normalize_anchor(str(block.get("anchor") or "")),
+                }
+                for block in parser.blocks
+            ]
             items, trim_details = _trim_epub_gutenberg_license_blocks(items, file_name)
             if trim_details and report is not None:
                 report.setdefault("gutenberg", {}).setdefault("epub_body_trimmed", []).append(trim_details)
             if not items:
                 continue
+            anchor_chapters, anchor_error = _split_epub_items_by_anchors(items, file_toc_entries, file_name)
+            if anchor_error and report is not None:
+                report["toc"]["low_confidence"] = True
+                report["toc"].setdefault("anchor_split_failed", []).append(anchor_error)
+            if anchor_chapters:
+                chapters.extend(anchor_chapters)
+                continue
             title_override = toc_titles_by_file.get(file_name) if use_toc else None
-            heading = title_override or next((text for btype, text in items if btype == "heading"), Path(file_name).stem)
-            if not any(btype == "heading" for btype, _ in items):
-                items.insert(0, ("heading", heading))
-            chapters.append({"title": heading, "items": items})
+            chapter_items = _items_to_chapter_items(items)
+            heading = title_override or next((text for btype, text in chapter_items if btype == "heading"), Path(file_name).stem)
+            if not any(btype == "heading" for btype, _ in chapter_items):
+                chapter_items.insert(0, ("heading", heading))
+            chapters.append({"title": heading, "items": chapter_items})
     if not chapters:
         raise ProjectError("No readable text blocks found in EPUB.")
     return chapters

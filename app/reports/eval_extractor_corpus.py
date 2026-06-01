@@ -28,7 +28,6 @@ BACKEND_ROOT = APP_ROOT / "backend"
 RAW_ROOT = HANDOFF_ROOT.parent / "AILAB_SOURCES_RAW"
 REPORTS_ROOT = APP_ROOT / "reports"
 GROUND_TRUTH_PATH = REPORTS_ROOT / "ground_truth_chapters.json"
-BASELINE_RESULTS_PATH = REPORTS_ROOT / "eval_results_v0.3.1.json"
 
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
@@ -49,6 +48,10 @@ from services.workspace import (  # noqa: E402
 
 RESULTS_PATH = REPORTS_ROOT / f"eval_results_v{PIPELINE_VERSION}.json"
 REPORT_PATH = REPORTS_ROOT / f"EXTRACTOR_EVAL_v{PIPELINE_VERSION}.md"
+BASELINE_VERSION = ".".join(
+    PIPELINE_VERSION.split(".")[:-1] + [str(max(0, int(PIPELINE_VERSION.split(".")[-1]) - 1))]
+) if PIPELINE_VERSION.split(".")[-1].isdigit() else "0.3.2"
+BASELINE_RESULTS_PATH = REPORTS_ROOT / f"eval_results_v{BASELINE_VERSION}.json"
 
 
 EVAL_MARKER_NAME = "eval_corpus_project.json"
@@ -736,7 +739,7 @@ def markdown_table(headers: list[str], rows: list[list[Any]]) -> str:
 
 
 def load_baseline_results(current_version: str | None) -> dict[str, Any] | None:
-    if current_version == "0.3.1" or not BASELINE_RESULTS_PATH.exists():
+    if current_version == BASELINE_VERSION or not BASELINE_RESULTS_PATH.exists():
         return None
     try:
         return json.loads(BASELINE_RESULTS_PATH.read_text(encoding="utf-8"))
@@ -747,6 +750,8 @@ def load_baseline_results(current_version: str | None) -> dict[str, Any] | None:
 def render_before_after(results: dict[str, Any], baseline: dict[str, Any] | None) -> str:
     if not baseline:
         return ""
+    baseline_version = baseline.get("pipeline_version") or BASELINE_VERSION
+    current_version = results.get("pipeline_version")
     baseline_by_doc = {item["doc_id"]: item for item in baseline.get("items", []) if item.get("doc_id")}
     rows: list[list[Any]] = []
     for item in results.get("items", []):
@@ -767,16 +772,50 @@ def render_before_after(results: dict[str, Any], baseline: dict[str, Any] | None
     return markdown_table(
         [
             "doc_id",
-            "v0.3.1 verdict",
-            f"v{results.get('pipeline_version')} verdict",
-            "extracted 0.3.1",
-            f"extracted {results.get('pipeline_version')}",
-            "low_conf 0.3.1",
-            f"low_conf {results.get('pipeline_version')}",
-            "match_rate 0.3.1",
-            f"match_rate {results.get('pipeline_version')}",
+            f"v{baseline_version} verdict",
+            f"v{current_version} verdict",
+            f"extracted {baseline_version}",
+            f"extracted {current_version}",
+            f"low_conf {baseline_version}",
+            f"low_conf {current_version}",
+            f"match_rate {baseline_version}",
+            f"match_rate {current_version}",
         ],
         rows,
+    )
+
+
+def defect_type_counts(results: dict[str, Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in results.get("items", []):
+        for defect in item.get("defects", []):
+            defect_type = defect.get("type", "unknown")
+            if defect_type != "none":
+                counts[defect_type] = counts.get(defect_type, 0) + 1
+    return counts
+
+
+def render_defect_before_after(results: dict[str, Any], baseline: dict[str, Any] | None) -> str:
+    if not baseline:
+        return ""
+    baseline_version = baseline.get("pipeline_version") or BASELINE_VERSION
+    current_version = results.get("pipeline_version")
+    old_counts = defect_type_counts(baseline)
+    new_counts = defect_type_counts(results)
+    defect_types = sorted(set(old_counts) | set(new_counts))
+    if not defect_types:
+        return "No automated defects in either run."
+    return markdown_table(
+        ["defect_type", f"v{baseline_version}", f"v{current_version}", "delta"],
+        [
+            [
+                defect_type,
+                old_counts.get(defect_type, 0),
+                new_counts.get(defect_type, 0),
+                new_counts.get(defect_type, 0) - old_counts.get(defect_type, 0),
+            ]
+            for defect_type in defect_types
+        ],
     )
 
 
@@ -817,6 +856,12 @@ def render_report(results: dict[str, Any]) -> str:
         lines.append("")
         lines.append(before_after)
         lines.append("")
+        defect_before_after = render_defect_before_after(results, baseline)
+        if defect_before_after:
+            lines.append("## Defect Count Before/After")
+            lines.append("")
+            lines.append(defect_before_after)
+            lines.append("")
     lines.append("## Raw Corpus Verification")
     raw = results.get("raw_verification", {})
     lines.append(f"- Raw root: `{raw.get('raw_root')}`")

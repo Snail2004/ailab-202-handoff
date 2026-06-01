@@ -5,7 +5,7 @@
   "prepared_before_extraction": true,
   "source_note": "Draft ground truth was prepared from raw TXT Contents and EPUB NCX/nav TOC, then manually filtered to bodymatter/content chapters. It is not derived from extractor output.",
   "global_caveat": "EPUB navPoint/nav.xhtml entries are not equal to true content chapters because they often include titlepage, imprint, contents, dedication, colophon, endnotes, and other front/back matter.",
-  "approval_note": "Approved by project lead on 2026-06-02: time_machine_epub counts Epilogue as a content unit; frankenstein_epub keeps 28 top-level units, tracks 'Walton, in Continuation' as a nested TOC anchor deferred to extractor Level 2, and treats Introduction/Preface as authorial front matter if emitted.",
+  "approval_note": "Approved by project lead on 2026-06-02: time_machine_epub counts Epilogue as a content unit; frankenstein_epub v0.3.3 counts 'Walton, in Continuation' as a separate content unit because extractor anchor-splitting now supports same-file TOC anchors; Introduction/Preface remain authorial front matter if emitted.",
   "ambiguities_requiring_approval": [
     {
       "doc_id": "time_machine_epub",
@@ -17,7 +17,7 @@
       "doc_id": "frankenstein_epub",
       "question": "Should 'Walton, in Continuation' be a separate content unit or a nested section inside Chapter XXIV?",
       "draft_choice": "track_as_nested_section_inside_chapter_xxiv_not_top_level",
-      "approved_decision": "keep_28_top_level_units_and_surface_as_deferred_nested_anchor"
+      "approved_decision": "count_as_separate_content_unit_after_anchor_splitting_v0.3.3"
     }
   ],
   "books": {
@@ -230,7 +230,7 @@
       "source_file": "source.epub",
       "format": "epub",
       "ground_truth_source": "Standard Ebooks NCX/nav filtered to letters and chapters under Frankenstein",
-      "expected_count": 28,
+      "expected_count": 29,
       "expected_chapters": [
         { "index": 1, "title": "Letter I" },
         { "index": 2, "title": "Letter II" },
@@ -259,14 +259,8 @@
         { "index": 25, "title": "Chapter XXI" },
         { "index": 26, "title": "Chapter XXII" },
         { "index": 27, "title": "Chapter XXIII" },
-        { "index": 28, "title": "Chapter XXIV" }
-      ],
-      "nested_sections": [
-        {
-          "parent_index": 28,
-          "title": "Walton, in Continuation",
-          "note": "NCX/nav exposes this as a nested anchor in chapter-24.xhtml. Ground truth tracks it as a nested section, not a separate top-level chapter; extractor Level 1 may defer splitting it, but the report must surface it."
-        }
+        { "index": 28, "title": "Chapter XXIV" },
+        { "index": 29, "title": "Walton, in Continuation" }
       ],
       "excluded_toc_items": [
         "Titlepage",
@@ -280,7 +274,7 @@
         "Colophon",
         "Uncopyright"
       ],
-      "review_notes": "Approved: Introduction/Preface/Dedication/Epigraph are excluded as front matter; Introduction/Preface should be classified as authorial front matter if emitted. Walton, in Continuation remains nested inside Chapter XXIV and must be surfaced as deferred Level 2 work."
+      "review_notes": "Approved: Introduction/Preface/Dedication/Epigraph are excluded as front matter; Introduction/Preface should be classified as authorial front matter if emitted. Walton, in Continuation is counted as a separate content unit after v0.3.3 anchor-splitting support because the EPUB TOC exposes a distinct same-file anchor."
     },
     "call_wild_epub": {
       "work_title": "The Call of the Wild",

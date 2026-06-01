@@ -497,7 +497,9 @@ Project Gutenberg footer should not survive.
         self.assertEqual(extract.status_code, 201)
         dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
         self.assertEqual(dataset["document"]["metadata"]["source_format"], "txt")
-        self.assertEqual(dataset["document"]["metadata"]["pipeline_version"], "0.3.2")
+        from config import PIPELINE_VERSION
+
+        self.assertEqual(dataset["document"]["metadata"]["pipeline_version"], PIPELINE_VERSION)
         report = self._extraction_report(doc_id)
         self.assertEqual(report["source_format_mismatch"], {"declared": "epub", "actual": "txt"})
 
@@ -639,6 +641,15 @@ Bob waited.
         self.assertEqual(report["toc"]["ambiguous_titles"], [])
         self.assertEqual(report["toc"]["ambiguous_count"], 0)
 
+    def test_dialogue_classifier_is_conservative_for_narrative_quotes(self):
+        from services.extraction import block_type_for
+
+        self.assertEqual(block_type_for('"Hello," Bob said.'), "dialogue")
+        self.assertEqual(
+            block_type_for('Alice called it "strange" and later "curious" while she kept walking.'),
+            "paragraph",
+        )
+
     def test_epub_ncx_toc_names_chapters_and_skips_non_toc_spine(self):
         doc_id = "extract_epub_ncx_toc"
         self.client.post("/api/projects", json={
@@ -723,6 +734,172 @@ Bob waited.
         self._assert_toc_report(report)
         self.assertEqual(report["toc"]["toc_source"], "nav")
         self.assertFalse(report["toc"]["fallback_used"])
+
+    def test_epub_toc_anchors_split_multiple_chapters_in_one_file(self):
+        doc_id = "extract_epub_anchor_split"
+        self.client.post("/api/projects", json={
+            "doc_id": doc_id,
+            "metadata": {
+                "title": "Anchor EPUB",
+                "author": "Tester",
+                "source_format": "epub",
+                "license": "public-domain",
+                "contamination_risk": "low",
+            },
+        })
+        opf = """<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="body" href="body.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="body"/></spine>
+</package>"""
+        epub = self._minimal_epub(opf, {
+            "nav.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body>
+<nav epub:type="toc"><ol><li><a href="body.xhtml#ch1">I</a></li><li><a href="body.xhtml#ch2">II</a></li></ol></nav>
+</body></html>""",
+            "body.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml"><body>
+<h2 id="ch1">I</h2><p>Alice arrived.</p>
+<h2 id="ch2">II</h2><p>Bob waited.</p>
+</body></html>""",
+        })
+        self.client.post(f"/api/projects/{doc_id}/source", data={"file": (epub, "source.epub")}, content_type="multipart/form-data")
+        extract = self.client.post(f"/api/projects/{doc_id}/extract", json={"overwrite": False})
+        self.assertEqual(extract.status_code, 201)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertEqual([chapter["title"] for chapter in dataset["chapters"]], ["I", "II"])
+        self.assertEqual(len(dataset["chapters"]), 2)
+        chapter_text = {
+            chapter["title"]: " ".join(block["clean_text"] for block in dataset["blocks"] if block["chapter_id"] == chapter["chapter_id"])
+            for chapter in dataset["chapters"]
+        }
+        self.assertIn("Alice arrived.", chapter_text["I"])
+        self.assertNotIn("Bob waited.", chapter_text["I"])
+        self.assertIn("Bob waited.", chapter_text["II"])
+        report = self._extraction_report(doc_id)
+        self.assertEqual(report["toc"]["toc_source"], "nav")
+        self.assertFalse(report["toc"]["low_confidence"])
+        self.assertEqual(report["toc"]["duplicate_targets"], [])
+
+    def test_epub_toc_marked_file_can_still_contain_body_anchors(self):
+        doc_id = "extract_epub_toc_file_body_anchors"
+        self.client.post("/api/projects", json={
+            "doc_id": doc_id,
+            "metadata": {
+                "title": "TOC File With Body EPUB",
+                "author": "Tester",
+                "source_format": "epub",
+                "license": "public-domain",
+                "contamination_risk": "low",
+            },
+        })
+        opf = """<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <manifest>
+    <item id="toc" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="mixed" href="mixed.xhtml" media-type="application/xhtml+xml"/>
+    <item id="body2" href="body2.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine toc="toc"><itemref idref="mixed"/><itemref idref="body2"/></spine>
+  <guide><reference type="toc" href="mixed.xhtml"/></guide>
+</package>"""
+        epub = self._minimal_epub(opf, {
+            "toc.ncx": """<?xml version="1.0"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap>
+<navPoint id="n1" playOrder="1"><navLabel><text>I</text></navLabel><content src="mixed.xhtml#ch1"/></navPoint>
+<navPoint id="n2" playOrder="2"><navLabel><text>II</text></navLabel><content src="mixed.xhtml#ch2"/></navPoint>
+<navPoint id="n3" playOrder="3"><navLabel><text>III</text></navLabel><content src="body2.xhtml"/></navPoint>
+</navMap></ncx>""",
+            "mixed.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml"><body>
+<h1>Table of Contents</h1><p>I</p><p>II</p>
+<h2 id="ch1">I</h2><p>Alice arrived.</p>
+<h2 id="ch2">II</h2><p>Bob waited.</p>
+</body></html>""",
+            "body2.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml"><body><h2>III</h2><p>Carol stayed.</p></body></html>""",
+        })
+        self.client.post(f"/api/projects/{doc_id}/source", data={"file": (epub, "source.epub")}, content_type="multipart/form-data")
+        extract = self.client.post(f"/api/projects/{doc_id}/extract", json={"overwrite": False})
+        self.assertEqual(extract.status_code, 201)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertEqual([chapter["title"] for chapter in dataset["chapters"]], ["I", "II", "III"])
+        all_text = "\n".join(block["clean_text"] for block in dataset["blocks"])
+        self.assertNotIn("Table of Contents", all_text)
+        report = self._extraction_report(doc_id)
+        self.assertFalse(report["toc"]["low_confidence"])
+
+    def test_epub_toc_missing_anchor_is_low_confidence(self):
+        doc_id = "extract_epub_missing_anchor"
+        self.client.post("/api/projects", json={
+            "doc_id": doc_id,
+            "metadata": {
+                "title": "Missing Anchor EPUB",
+                "author": "Tester",
+                "source_format": "epub",
+                "license": "public-domain",
+                "contamination_risk": "low",
+            },
+        })
+        opf = """<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="body" href="body.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="body"/></spine>
+</package>"""
+        epub = self._minimal_epub(opf, {
+            "nav.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body>
+<nav epub:type="toc"><ol><li><a href="body.xhtml#ch1">I</a></li><li><a href="body.xhtml#missing">II</a></li></ol></nav>
+</body></html>""",
+            "body.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml"><body>
+<h2 id="ch1">I</h2><p>Alice arrived.</p>
+<h2 id="ch2">II</h2><p>Bob waited.</p>
+</body></html>""",
+        })
+        self.client.post(f"/api/projects/{doc_id}/source", data={"file": (epub, "source.epub")}, content_type="multipart/form-data")
+        extract = self.client.post(f"/api/projects/{doc_id}/extract", json={"overwrite": False})
+        self.assertEqual(extract.status_code, 201)
+        report = self._extraction_report(doc_id)
+        self.assertTrue(report["toc"]["low_confidence"])
+        self.assertEqual(report["toc"]["anchor_split_failed"][0]["reason"], "missing-anchor")
+
+    def test_epub_first_same_file_toc_entry_can_start_without_anchor(self):
+        doc_id = "extract_epub_first_entry_no_anchor"
+        self.client.post("/api/projects", json={
+            "doc_id": doc_id,
+            "metadata": {
+                "title": "First Entry No Anchor EPUB",
+                "author": "Tester",
+                "source_format": "epub",
+                "license": "public-domain",
+                "contamination_risk": "low",
+            },
+        })
+        opf = """<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="body" href="body.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="body"/></spine>
+</package>"""
+        epub = self._minimal_epub(opf, {
+            "nav.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body>
+<nav epub:type="toc"><ol><li><a href="body.xhtml">Chapter XXIV</a></li><li><a href="body.xhtml#continuation">Walton, in Continuation</a></li></ol></nav>
+</body></html>""",
+            "body.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml"><body>
+<h2>Chapter XXIV</h2><p>Victor speaks.</p>
+<h2 id="continuation">Walton, in Continuation</h2><p>Walton writes.</p>
+</body></html>""",
+        })
+        self.client.post(f"/api/projects/{doc_id}/source", data={"file": (epub, "source.epub")}, content_type="multipart/form-data")
+        extract = self.client.post(f"/api/projects/{doc_id}/extract", json={"overwrite": False})
+        self.assertEqual(extract.status_code, 201)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertEqual([chapter["title"] for chapter in dataset["chapters"]], ["Chapter XXIV", "Walton, in Continuation"])
+        report = self._extraction_report(doc_id)
+        self.assertFalse(report["toc"]["low_confidence"])
 
     def test_epub_nav_duplicate_title_is_low_confidence(self):
         doc_id = "extract_epub_nav_duplicate"
