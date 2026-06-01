@@ -121,7 +121,15 @@ function MetaBar({ block }) {
 function SelectionPopover({ rect, onGlossary, onEntity, onClose }) {
   if (!rect) return null;
   return (
-    <div className="sel-pop" style={{ top: rect.top, left: rect.left }} onMouseDown={e => e.preventDefault()}>
+    <div
+      className="sel-pop"
+      style={{ top: rect.top, left: rect.left }}
+      onMouseDown={e => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+      onClick={e => e.stopPropagation()}
+    >
       <button className="sel-pop-btn" onClick={onGlossary}><Ic.tag size={12} />Add glossary term</button>
       <div className="sel-pop-div" />
       <button className="sel-pop-btn" onClick={onEntity}><Ic.users size={12} />Add entity mention</button>

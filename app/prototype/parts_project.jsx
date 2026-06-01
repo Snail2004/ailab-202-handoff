@@ -9,6 +9,8 @@ function ProjectSourceScreen({
   errors,
   onSelectProject,
   onCreateProject,
+  onUpdateProject,
+  onDeleteProject,
   onPatchDoc,
   onUploadSource,
   onBack,
@@ -16,11 +18,18 @@ function ProjectSourceScreen({
 }) {
   const [file, setFile] = React.useState(null);
   const [confirmOverwrite, setConfirmOverwrite] = React.useState(false);
+  const [confirmDelete, setConfirmDelete] = React.useState(false);
   const [newDocId, setNewDocId] = React.useState("");
+  const [projectNote, setProjectNote] = React.useState("");
   const meta = docInfo.metadata || {};
   const prov = docInfo.provenance || {};
   const extracted = blocks.length > 0;
   const selectedProject = projects.find(p => p.doc_id === activeDocId);
+  const protectedProject = activeDocId === "gold_demo_01";
+
+  React.useEffect(() => {
+    setProjectNote(selectedProject?.note || "");
+  }, [selectedProject?.doc_id, selectedProject?.note]);
 
   function patchMetadata(patch) {
     onPatchDoc({ metadata: patch });
@@ -40,6 +49,11 @@ function ProjectSourceScreen({
       contamination_risk: meta.contamination_risk || "low",
     });
     if (created) setNewDocId("");
+  }
+
+  async function saveProjectSettings() {
+    if (!activeDocId) return;
+    await onUpdateProject(activeDocId, { note: projectNote });
   }
 
   async function uploadSelected() {
@@ -82,16 +96,56 @@ function ProjectSourceScreen({
         <div className="project-grid">
           <section className="project-panel">
             <div className="panel-title"><Ic.folder size={14} />Local project</div>
-            <div className="project-form">
-              <FormField label="open project">
+            <div className="project-picker">
+              <div className="project-section">
+                <div className="project-section-title">Open existing</div>
+                <FormField label="open project">
                 <select value={activeDocId || ""} onChange={e => onSelectProject(e.target.value)}>
                   {projects.map(p => <option key={p.doc_id} value={p.doc_id}>{p.doc_id} · {p.status}</option>)}
                 </select>
-              </FormField>
-              <FormField label="new doc_id">
+                </FormField>
+              </div>
+              <div className="project-section">
+                <div className="project-section-title">Create new</div>
+                <div className="project-create-row">
+                  <FormField label="new doc_id">
                 <input value={newDocId} placeholder="my_novel_01" onChange={e => setNewDocId(e.target.value)} />
-              </FormField>
-              <button className="btn" onClick={createFromForm}><Ic.plus size={13} />Create project</button>
+                  </FormField>
+                  <button className="btn primary project-create-btn" disabled={!newDocId.trim()} onClick={createFromForm}><Ic.plus size={13} />Create project</button>
+                </div>
+              </div>
+            </div>
+            <div className="project-admin">
+              <div className="project-admin-head">
+                <span>Project info</span>
+                <span className="mono">{activeDocId || "no_project"}</span>
+              </div>
+              <div className="project-form project-info-form">
+                <FormField label="project note">
+                  <textarea
+                    className="project-note"
+                    value={projectNote}
+                    disabled={!activeDocId}
+                    rows={4}
+                    placeholder="Short note for task owner, source choice, known issues..."
+                    onChange={e => setProjectNote(e.target.value)}
+                  />
+                </FormField>
+              </div>
+              <div className="project-admin-actions">
+                <button className="btn" disabled={!activeDocId} onClick={saveProjectSettings}>
+                  <Ic.save size={13} />Save project info
+                </button>
+                <button className="btn danger" disabled={!activeDocId || protectedProject} onClick={() => setConfirmDelete(true)}>
+                  <Ic.trash size={13} />Delete project
+                </button>
+              </div>
+              {protectedProject && (
+                <div className="project-admin-note">
+                  <Ic.lock size={11} />
+                  <span>The golden sample is protected and cannot be deleted.</span>
+                </div>
+              )}
             </div>
           </section>
 
@@ -158,6 +212,19 @@ function ProjectSourceScreen({
           </>}>
           <p>Re-extracting can overwrite <span className="mono">document.json</span> and invalidate edited clean text, spans, and review state.</p>
           <p className="muted">Use this only when the source file or extraction settings changed.</p>
+        </Modal>
+      )}
+
+      {confirmDelete && (
+        <Modal title="Delete project" icon={Ic.alert} tone="bad" onClose={() => setConfirmDelete(false)}
+          actions={<>
+            <button className="btn" onClick={() => setConfirmDelete(false)}>Cancel</button>
+            <button className="btn danger" onClick={() => { setConfirmDelete(false); onDeleteProject(activeDocId, activeDocId); }}>
+              Delete {activeDocId}
+            </button>
+          </>}>
+          <p>This removes the local project folder for <span className="mono">{activeDocId}</span>, including raw source, canonical files, working drafts, logs, and exports.</p>
+          <p className="muted">This cannot be undone. Export or copy the project first if you need to preserve it.</p>
         </Modal>
       )}
     </div>

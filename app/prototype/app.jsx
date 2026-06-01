@@ -500,6 +500,42 @@ function App() {
     }
   }
 
+  async function updateProjectSettings(docId, patch) {
+    if (!docId) return null;
+    try {
+      const result = await API.patchProject(docId, { ...patch, user: currentUser() });
+      await refreshProjects();
+      toast("Project updated", "good");
+      return result;
+    } catch (err) {
+      toast("Update project failed", "bad", errorMessage(err));
+      return null;
+    }
+  }
+
+  async function deleteProjectById(docId, confirmDocId) {
+    if (!docId) return null;
+    try {
+      const result = await API.deleteProject(docId, { confirm_doc_id: confirmDocId, user: currentUser() });
+      const list = await refreshProjects();
+      const next = list.find(p => p.status === "available") || list[0];
+      if (next) {
+        await selectProject(next.doc_id);
+      } else {
+        setActiveDocId("");
+        setDocInfo({ doc_id: "", metadata: {}, provenance: {} });
+        setChapters([]);
+        setBlocks([]);
+        setView("project");
+      }
+      toast("Project deleted", "good", result.doc_id);
+      return result;
+    } catch (err) {
+      toast("Delete project failed", "bad", errorMessage(err));
+      return null;
+    }
+  }
+
   async function uploadSource(file, overwrite) {
     if (!activeDocId || !file) return null;
     try {
@@ -779,6 +815,8 @@ function App() {
           onSelectProject={selectProject}
           onCreateProject={createProject}
           onPatchDoc={patchDoc}
+          onUpdateProject={updateProjectSettings}
+          onDeleteProject={deleteProjectById}
           onUploadSource={uploadSource}
           onBack={() => setView("workspace")}
           onExtract={runExtract}

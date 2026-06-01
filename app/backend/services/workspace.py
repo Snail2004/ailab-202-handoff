@@ -61,13 +61,34 @@ def ensure_working_files(project_path: Path, document: dict[str, Any] | None = N
             write_json_atomic(review_path, default_review_state(document))
 
 
+def _project_meta_path(project_path: Path) -> Path:
+    return project_path / "working" / "project_meta.json"
+
+
+def read_project_meta(project_path: Path) -> dict[str, Any]:
+    path = _project_meta_path(project_path)
+    if not path.exists():
+        return {"doc_id": project_path.name, "metadata": {}, "note": "", "status": "created"}
+    meta = read_json(path)
+    meta.setdefault("doc_id", project_path.name)
+    meta.setdefault("metadata", {})
+    meta.setdefault("note", "")
+    return meta
+
+
+def write_project_meta(project_path: Path, meta: dict[str, Any]) -> None:
+    working = project_path / "working"
+    working.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(_project_meta_path(project_path), meta)
+
+
 def create_project_shell(doc_id: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     project_path = get_project_path(doc_id)
     if project_path.exists():
         raise ProjectError(f"Project already exists: {doc_id}")
     dirs = ensure_project_dirs(doc_id)
-    meta = {"doc_id": doc_id, "metadata": metadata or {}, "status": "created"}
-    write_json_atomic(dirs["working"] / "project_meta.json", meta)
+    meta = {"doc_id": doc_id, "metadata": metadata or {}, "note": "", "status": "created"}
+    write_project_meta(dirs["project"], meta)
     ensure_working_files(project_path)
     return project_file_state(doc_id)
 
@@ -114,21 +135,25 @@ def list_projects() -> list[dict[str, Any]]:
     for path in sorted(p for p in PROJECTS_ROOT.iterdir() if p.is_dir()):
         document_path = path / "canonical" / DATASET_FILES["document"]
         title = path.name
+        note = ""
         status = "created"
         try:
+            meta = read_project_meta(path)
+            note = str(meta.get("note") or "")
+            meta_title = (meta.get("metadata") or {}).get("title")
             if document_path.exists():
                 document = read_json(document_path)
                 metadata = document.get("metadata", {})
-                title = metadata.get("title") or document.get("doc_id") or path.name
+                title = metadata.get("title") or meta_title or document.get("doc_id") or path.name
                 status = "available"
-            elif (path / "working" / "project_meta.json").exists():
-                meta = read_json(path / "working" / "project_meta.json")
-                title = (meta.get("metadata") or {}).get("title") or path.name
+            else:
+                title = meta_title or path.name
         except Exception:
             title = path.name
         projects.append({
             "doc_id": path.name,
             "title": title,
+            "note": note,
             "status": status,
             "path": display_path(path),
         })
@@ -138,9 +163,20 @@ def list_projects() -> list[dict[str, Any]]:
 def project_file_state(doc_id: str) -> dict[str, Any]:
     project_path = get_project_path(doc_id)
     canonical = project_path / "canonical"
+    meta = read_project_meta(project_path) if project_path.exists() else {"metadata": {}, "note": ""}
+    title = (meta.get("metadata") or {}).get("title") or doc_id
+    document_path = canonical / DATASET_FILES["document"]
+    if document_path.exists():
+        try:
+            document = read_json(document_path)
+            title = document.get("metadata", {}).get("title") or document.get("doc_id") or title
+        except Exception:
+            pass
     return {
         "doc_id": doc_id,
         "path": display_path(project_path),
+        "title": title,
+        "note": meta.get("note", ""),
         "has_raw": any((project_path / "raw").iterdir()) if (project_path / "raw").exists() else False,
         "has_canonical": canonical.exists(),
         "has_document": (canonical / DATASET_FILES["document"]).exists(),
@@ -150,6 +186,30 @@ def project_file_state(doc_id: str) -> dict[str, Any]:
             for key, file_name in DATASET_FILES.items()
         },
     }
+
+
+def update_project_settings(doc_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    project_path = get_project_path(doc_id)
+    if not project_path.exists():
+        raise ProjectError(f"Project not found: {doc_id}")
+    note = payload.get("note")
+    meta = read_project_meta(project_path)
+    if note is not None:
+        meta["note"] = str(note)
+    write_project_meta(project_path, meta)
+    return project_file_state(doc_id)
+
+
+def delete_project(doc_id: str, confirm_doc_id: str | None = None) -> dict[str, Any]:
+    if doc_id == "gold_demo_01":
+        raise ProjectError("gold_demo_01 is the protected golden sample and cannot be deleted.")
+    if confirm_doc_id != doc_id:
+        raise ProjectError("Delete requires confirm_doc_id matching the project doc_id.")
+    project_path = get_project_path(doc_id)
+    if not project_path.exists():
+        raise ProjectError(f"Project not found: {doc_id}")
+    shutil.rmtree(project_path)
+    return {"doc_id": doc_id, "deleted": True}
 
 
 def find_source_file(project_path: Path) -> Path | None:

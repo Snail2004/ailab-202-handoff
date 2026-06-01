@@ -62,6 +62,50 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertIn("reference_drafts", dataset["data"])
         self.assertIn("jobs", dataset["data"])
 
+    def test_project_settings_note_only(self):
+        doc_id = "project_settings"
+        create = self.client.post("/api/projects", json={
+            "doc_id": doc_id,
+            "metadata": {"title": "Original Title", "license": "public-domain", "contamination_risk": "low"},
+        })
+        self.assertEqual(create.status_code, 201)
+
+        update = self.client.patch(f"/api/projects/{doc_id}", json={
+            "note": "Assigned to member A. Source looks clean.",
+            "user": "tester",
+        })
+        self.assertEqual(update.status_code, 200)
+        state = update.get_json()["data"]
+        self.assertEqual(state["title"], "Original Title")
+        self.assertEqual(state["note"], "Assigned to member A. Source looks clean.")
+
+        projects = self.client.get("/api/projects").get_json()["data"]
+        project = next(item for item in projects if item["doc_id"] == doc_id)
+        self.assertEqual(project["title"], "Original Title")
+        self.assertEqual(project["note"], "Assigned to member A. Source looks clean.")
+
+        title_patch = self.client.patch(f"/api/projects/{doc_id}", json={"title": "Wrong route"})
+        self.assertEqual(title_patch.status_code, 400)
+
+    def test_project_delete_requires_confirmation_and_protects_sample(self):
+        doc_id = "project_delete"
+        create = self.client.post("/api/projects", json={"doc_id": doc_id, "metadata": {"title": "Delete Me"}})
+        self.assertEqual(create.status_code, 201)
+
+        missing_confirm = self.client.delete(f"/api/projects/{doc_id}", json={"confirm_doc_id": ""})
+        self.assertEqual(missing_confirm.status_code, 400)
+
+        protected = self.client.delete("/api/projects/gold_demo_01", json={"confirm_doc_id": "gold_demo_01"})
+        self.assertEqual(protected.status_code, 400)
+        self.assertIn("protected", protected.get_json()["errors"][0]["message"])
+
+        deleted = self.client.delete(f"/api/projects/{doc_id}", json={"confirm_doc_id": doc_id})
+        self.assertEqual(deleted.status_code, 200)
+        self.assertTrue(deleted.get_json()["data"]["deleted"])
+
+        detail = self.client.get(f"/api/projects/{doc_id}")
+        self.assertEqual(detail.status_code, 404)
+
     def test_validate_project(self):
         response = self.client.post("/api/projects/gold_demo_01/validate")
         self.assertEqual(response.status_code, 200)

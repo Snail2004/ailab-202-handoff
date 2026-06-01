@@ -5,11 +5,13 @@ from services.extraction import extract_project, read_job
 from services.workspace import (
     ProjectError,
     create_project_shell,
+    delete_project,
     get_project_path,
     has_project,
     list_projects,
     project_file_state,
     save_source_file,
+    update_project_settings,
 )
 
 
@@ -50,6 +52,28 @@ def project_detail(doc_id: str):
         return ok(state)
     except ProjectError as exc:
         return error("invalid_project", str(exc), 400)
+
+
+@bp.patch("/projects/<doc_id>")
+def project_update(doc_id: str):
+    payload = request.get_json(silent=True) or {}
+    allowed = {"note"}
+    unknown = sorted(set(payload) - allowed - {"user"})
+    if unknown:
+        return error("read_only_or_unknown_field", f"Field is not editable here: {unknown[0]}", 400)
+    try:
+        return ok(update_project_settings(doc_id, payload))
+    except ProjectError as exc:
+        return error("project_update_error", str(exc), 400)
+
+
+@bp.delete("/projects/<doc_id>")
+def project_delete(doc_id: str):
+    payload = request.get_json(silent=True) or {}
+    try:
+        return ok(delete_project(doc_id, confirm_doc_id=payload.get("confirm_doc_id")))
+    except ProjectError as exc:
+        return error("project_delete_error", str(exc), 400)
 
 
 @bp.post("/projects/<doc_id>/source")

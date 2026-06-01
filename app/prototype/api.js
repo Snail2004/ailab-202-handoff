@@ -72,6 +72,8 @@
     listProjects: () => request("/projects"),
     createProject: (payload) => request("/projects", { method: "POST", body: payload }),
     getProject: (docId) => request(`/projects/${encodeURIComponent(docId)}`),
+    patchProject: (docId, payload) => request(`/projects/${encodeURIComponent(docId)}`, { method: "PATCH", body: payload }),
+    deleteProject: (docId, payload) => request(`/projects/${encodeURIComponent(docId)}`, { method: "DELETE", body: payload || {} }),
     uploadSource: (docId, file, overwrite) => {
       const form = new FormData();
       form.append("file", file);
