@@ -69,6 +69,7 @@ function adaptDataset(dataset) {
     references: mergeReferences(dataset),
     review: dataset.review_state || { blocks: {}, references: {}, summaries: {} },
     jobs: dataset.jobs || [],
+    history: dataset.history_state || { can_undo: false, can_redo: false, undo_top: null, redo_top: null, recent: [] },
   };
 }
 
@@ -133,7 +134,13 @@ function Modal({ title, icon: I, tone, children, onClose, actions }) {
   );
 }
 
-function TopBar({ docId, dirty, lastSaved, onValidate, onExport, onFreeze, freezeReady, freezeReasons }) {
+function historyTip(prefix, event) {
+  return event?.label ? `${prefix}: ${event.label}` : `${prefix} unavailable`;
+}
+
+function TopBar({ docId, dirty, lastSaved, onValidate, onExport, onFreeze, onUndo, onRedo, history, freezeReady, freezeReasons }) {
+  const canUndo = !!history?.can_undo && !dirty;
+  const canRedo = !!history?.can_redo && !dirty;
   return (
     <div className="topbar">
       <div className="tb-left">
@@ -151,6 +158,15 @@ function TopBar({ docId, dirty, lastSaved, onValidate, onExport, onFreeze, freez
         <span className="autosave tip" data-tip="Writes go through the Flask backend. Freeze creates a validated versioned snapshot.">
           {dirty ? <><span className="as-spin" />saving...</> : <><Ic.check size={12} className="as-ok" />saved {lastSaved}</>}
         </span>
+        <span className="tb-sep" />
+        <div className="undo-group">
+          <button className="btn icon-only tip" disabled={!canUndo} data-tip={dirty ? "Wait for current save to finish" : historyTip("Undo", history?.undo_top)} onClick={onUndo} aria-label="Undo">
+            <Ic.undo size={13} />
+          </button>
+          <button className="btn icon-only tip" disabled={!canRedo} data-tip={dirty ? "Wait for current save to finish" : historyTip("Redo", history?.redo_top)} onClick={onRedo} aria-label="Redo">
+            <Ic.redo size={13} />
+          </button>
+        </div>
         <span className="tb-sep" />
         <span className="user-chip tip" data-tip="Current local user"><span className="ua">M</span>{currentUser()}</span>
         <span className="tb-sep" />
@@ -195,6 +211,7 @@ function App() {
   const [summaries, setSummaries] = useState([]);
   const [references, setReferences] = useState([]);
   const [review, setReview] = useState({ blocks: {}, references: {}, summaries: {} });
+  const [historyState, setHistoryState] = useState({ can_undo: false, can_redo: false, undo_top: null, redo_top: null, recent: [] });
   const [errors, setErrors] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [filters, setFilters] = useState(new Set());
@@ -229,6 +246,7 @@ function App() {
     setSummaries(adapted.summaries);
     setReferences(adapted.references);
     setReview(adapted.review);
+    setHistoryState(adapted.history);
     setActiveDocId(adapted.docInfo.doc_id);
     localStorage.setItem(STORAGE_DOC, adapted.docInfo.doc_id);
     setSelectedId(prev => adapted.blocks.some(b => b.block_id === prev) ? prev : adapted.blocks[0]?.block_id || null);
@@ -436,6 +454,7 @@ function App() {
       setSummaries([]);
       setReferences([]);
       setReview({ blocks: {}, references: {}, summaries: {} });
+      setHistoryState({ can_undo: false, can_redo: false, undo_top: null, redo_top: null, recent: [] });
       setErrors([]);
       setSelectedId(null);
       setView("project");
@@ -468,6 +487,7 @@ function App() {
       setSummaries([]);
       setReferences([]);
       setReview({ blocks: {}, references: {}, summaries: {} });
+      setHistoryState({ can_undo: false, can_redo: false, undo_top: null, redo_top: null, recent: [] });
       setErrors([]);
       setSelectedId(null);
       setActiveDocId(result.doc_id);
@@ -666,6 +686,32 @@ function App() {
   function doExport() { setModal({ kind: "export" }); }
   function doFreeze() { setModal({ kind: "freeze" }); }
 
+  async function runUndo() {
+    if (!historyState.can_undo || dirty) return;
+    const result = await mutate(() => API.undo(activeDocId, { user: currentUser() }), { refresh: false, fail: "Undo failed" });
+    if (!result) return;
+    await loadDataset(activeDocId, { silent: true });
+    const target = result.event?.target || {};
+    if (target.block_id) setSelectedId(target.block_id);
+    toast(`Undo: ${result.event?.label || "last change"}`, "good");
+  }
+
+  async function runRedo() {
+    if (!historyState.can_redo || dirty) return;
+    const result = await mutate(() => API.redo(activeDocId, { user: currentUser() }), { refresh: false, fail: "Redo failed" });
+    if (!result) return;
+    await loadDataset(activeDocId, { silent: true });
+    const target = result.event?.target || {};
+    if (target.block_id) setSelectedId(target.block_id);
+    toast(`Redo: ${result.event?.label || "last undone change"}`, "good");
+  }
+
+  function isNativeTextUndoTarget(target) {
+    if (!target) return false;
+    const tag = (target.tagName || "").toLowerCase();
+    return tag === "textarea" || tag === "input" || target.isContentEditable;
+  }
+
   async function confirmExport() {
     const result = await mutate(() => API.exportProject(activeDocId, { user: currentUser() }), { refresh: false });
     if (result) {
@@ -688,6 +734,20 @@ function App() {
 
   useEffect(() => {
     function onKey(ev) {
+      const mod = ev.metaKey || ev.ctrlKey;
+      if (mod && !isNativeTextUndoTarget(ev.target)) {
+        const key = ev.key.toLowerCase();
+        if (key === "z" && !ev.shiftKey) {
+          ev.preventDefault();
+          runUndo();
+          return;
+        }
+        if (key === "y" || (key === "z" && ev.shiftKey)) {
+          ev.preventDefault();
+          runRedo();
+          return;
+        }
+      }
       if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter" && !editing) { ev.preventDefault(); markReviewed(); }
     }
     window.addEventListener("keydown", onKey);
@@ -741,6 +801,7 @@ function App() {
     <div className="app">
       <TopBar docId={docInfo.doc_id} dirty={dirty} lastSaved={lastSaved}
         onValidate={runValidate} onExport={doExport} onFreeze={doFreeze}
+        onUndo={runUndo} onRedo={runRedo} history={historyState}
         freezeReady={freezeReady} freezeReasons={freezeReasons} />
       <div className="workspace">
         <LeftSidebar docInfo={docInfo} projects={projects} blocks={visibleBlocks} chapters={chapters} review={review}
@@ -757,7 +818,7 @@ function App() {
           ctx={{ terms: blockTerms, entities: blockEntities, allEntities: entities, block, summary, references, errors, stats, freezeReasons,
             onDeleteTerm: deleteTerm, onUpdateTerm: updateTerm, onUpdateEntity: updateEntity, onUpdateSummary: updateSummary,
             onUpdateReference: updateReference, onCreateReference: createReferenceDraft, onSaveDraft: saveDraft, onMarkReviewedReference: markReviewedReference,
-            onLockReference: lockReference, onUpdateDiscourse: updateDiscourse, onJump: jumpTo }} />
+            onLockReference: lockReference, onUpdateDiscourse: updateDiscourse, onJump: jumpTo, history: historyState }} />
       </div>
 
       <Toasts items={toasts} onDismiss={dismiss} />

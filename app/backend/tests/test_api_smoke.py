@@ -2,6 +2,7 @@ import os
 import sys
 import tempfile
 import unittest
+import json
 from io import BytesIO
 from pathlib import Path
 from zipfile import ZipFile
@@ -29,6 +30,26 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.get_json()["ok"])
 
+    def _make_txt_project(self, doc_id: str, source: bytes | None = None) -> dict:
+        self.client.post("/api/projects", json={
+            "doc_id": doc_id,
+            "metadata": {
+                "title": doc_id,
+                "author": "Tester",
+                "source_format": "txt",
+                "license": "public-domain",
+                "contamination_risk": "low",
+            },
+        })
+        self.client.post(
+            f"/api/projects/{doc_id}/source",
+            data={"file": (BytesIO(source or b"Chapter 1\n\nAlice arrived.\n\nBob waited."), "source.txt")},
+            content_type="multipart/form-data",
+        )
+        extract = self.client.post(f"/api/projects/{doc_id}/extract", json={"overwrite": False, "user": "tester"})
+        self.assertEqual(extract.status_code, 201)
+        return self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+
     def test_seed_project_and_dataset(self):
         projects = self.client.get("/api/projects").get_json()
         self.assertTrue(projects["ok"])
@@ -48,6 +69,164 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertTrue(payload["data"]["ok"])
         self.assertEqual(payload["data"]["exit_code"], 0)
+
+    def test_undo_redo_clean_text(self):
+        doc_id = "history_clean"
+        dataset = self._make_txt_project(doc_id)
+        block = next(block for block in dataset["blocks"] if block["block_type"] != "heading")
+        old_text = block["clean_text"]
+        new_text = "Alice arrived, then looked back."
+
+        patch = self.client.patch(f"/api/projects/{doc_id}/blocks/{block['block_id']}", json={
+            "clean_text": new_text,
+            "user": "tester",
+        })
+        self.assertEqual(patch.status_code, 200)
+        history = self.client.get(f"/api/projects/{doc_id}/history").get_json()["data"]
+        self.assertTrue(history["can_undo"])
+        self.assertFalse(history["can_redo"])
+
+        undo = self.client.post(f"/api/projects/{doc_id}/undo", json={"user": "tester"})
+        self.assertEqual(undo.status_code, 200)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        restored = next(item for item in dataset["blocks"] if item["block_id"] == block["block_id"])
+        self.assertEqual(restored["clean_text"], old_text)
+        self.assertTrue(dataset["history_state"]["can_redo"])
+
+        redo = self.client.post(f"/api/projects/{doc_id}/redo", json={"user": "tester"})
+        self.assertEqual(redo.status_code, 200)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        redone = next(item for item in dataset["blocks"] if item["block_id"] == block["block_id"])
+        self.assertEqual(redone["clean_text"], new_text)
+
+    def test_undo_redo_glossary_add(self):
+        doc_id = "history_glossary"
+        dataset = self._make_txt_project(doc_id)
+        block = next(block for block in dataset["blocks"] if "Alice" in block["clean_text"])
+        start = block["clean_text"].index("Alice")
+        end = start + len("Alice")
+
+        created = self.client.post(f"/api/projects/{doc_id}/glossary/from-selection", json={
+            "block_id": block["block_id"],
+            "start": start,
+            "end": end,
+            "source_term": "Alice",
+            "expected_target": "Alice",
+            "user": "tester",
+        })
+        self.assertEqual(created.status_code, 201)
+        term_id = created.get_json()["data"]["term_id"]
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertTrue(any(term["term_id"] == term_id for term in dataset["glossary"]))
+
+        self.client.post(f"/api/projects/{doc_id}/undo", json={"user": "tester"})
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertFalse(any(term["term_id"] == term_id for term in dataset["glossary"]))
+        restored_block = next(item for item in dataset["blocks"] if item["block_id"] == block["block_id"])
+        self.assertNotIn(term_id, (restored_block.get("annotations") or {}).get("term_occurrences", []))
+
+        self.client.post(f"/api/projects/{doc_id}/redo", json={"user": "tester"})
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertTrue(any(term["term_id"] == term_id for term in dataset["glossary"]))
+
+    def test_undo_redo_review_state(self):
+        doc_id = "history_review"
+        dataset = self._make_txt_project(doc_id)
+        block_id = dataset["blocks"][0]["block_id"]
+
+        review = self.client.patch(f"/api/projects/{doc_id}/review/blocks/{block_id}", json={
+            "reviewed": True,
+            "reviewed_by": "tester",
+            "user": "tester",
+        })
+        self.assertEqual(review.status_code, 200)
+        self.client.post(f"/api/projects/{doc_id}/undo", json={"user": "tester"})
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertFalse(dataset["review_state"]["blocks"][block_id]["reviewed"])
+
+        self.client.post(f"/api/projects/{doc_id}/redo", json={"user": "tester"})
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertTrue(dataset["review_state"]["blocks"][block_id]["reviewed"])
+
+    def test_history_redo_clears_after_new_mutation(self):
+        doc_id = "history_clear"
+        dataset = self._make_txt_project(doc_id)
+        block = next(block for block in dataset["blocks"] if block["block_type"] != "heading")
+        self.client.patch(f"/api/projects/{doc_id}/blocks/{block['block_id']}", json={
+            "clean_text": "First edit.",
+            "user": "tester",
+        })
+        self.client.post(f"/api/projects/{doc_id}/undo", json={"user": "tester"})
+        history = self.client.get(f"/api/projects/{doc_id}/history").get_json()["data"]
+        self.assertTrue(history["can_redo"])
+
+        self.client.patch(f"/api/projects/{doc_id}/blocks/{block['block_id']}", json={
+            "quality_flags": ["needs_review"],
+            "user": "tester",
+        })
+        history = self.client.get(f"/api/projects/{doc_id}/history").get_json()["data"]
+        self.assertFalse(history["can_redo"])
+
+    def test_validate_does_not_create_history_and_empty_undo_fails(self):
+        doc_id = "history_noop"
+        self._make_txt_project(doc_id)
+        history = self.client.get(f"/api/projects/{doc_id}/history").get_json()["data"]
+        self.assertFalse(history["can_undo"])
+
+        validate = self.client.post(f"/api/projects/{doc_id}/validate", json={"user": "tester"})
+        self.assertEqual(validate.status_code, 200)
+        history = self.client.get(f"/api/projects/{doc_id}/history").get_json()["data"]
+        self.assertFalse(history["can_undo"])
+
+        undo = self.client.post(f"/api/projects/{doc_id}/undo", json={"user": "tester"})
+        self.assertEqual(undo.status_code, 409)
+        self.assertEqual(undo.get_json()["errors"][0]["code"], "empty_undo_stack")
+
+    def test_reference_draft_undo_redo_keeps_csv_in_sync(self):
+        doc_id = "history_reference_csv"
+        dataset = self._make_txt_project(doc_id)
+        block = next(block for block in dataset["blocks"] if block["block_type"] != "heading")
+        working = Path(self.tmp.name) / doc_id / "working"
+        drafts_path = working / "drafts.json"
+        csv_path = working / "translation_review_log.csv"
+
+        draft_a = self.client.post(f"/api/projects/{doc_id}/references/draft", json={
+            "block_id": block["block_id"],
+            "reference_vi": "BAN_DICH_A_UNIQUE",
+            "source": "human",
+            "translated_by": "tester",
+            "user": "tester",
+        })
+        self.assertEqual(draft_a.status_code, 201)
+        reference_id = draft_a.get_json()["data"]["reference_id"]
+        self.assertIn("BAN_DICH_A_UNIQUE", csv_path.read_text(encoding="utf-8"))
+
+        draft_b = self.client.post(f"/api/projects/{doc_id}/references/draft", json={
+            "reference_id": reference_id,
+            "block_id": block["block_id"],
+            "reference_vi": "BAN_DICH_B_UNIQUE",
+            "source": "human",
+            "translated_by": "tester",
+            "user": "tester",
+        })
+        self.assertEqual(draft_b.status_code, 201)
+        self.assertIn("BAN_DICH_B_UNIQUE", csv_path.read_text(encoding="utf-8"))
+
+        undo = self.client.post(f"/api/projects/{doc_id}/undo", json={"user": "tester"})
+        self.assertEqual(undo.status_code, 200)
+        drafts = json.loads(drafts_path.read_text(encoding="utf-8"))
+        self.assertEqual(drafts["references"][reference_id]["reference_vi"], "BAN_DICH_A_UNIQUE")
+        csv_text = csv_path.read_text(encoding="utf-8")
+        self.assertIn("BAN_DICH_A_UNIQUE", csv_text)
+        self.assertNotIn("BAN_DICH_B_UNIQUE", csv_text)
+
+        redo = self.client.post(f"/api/projects/{doc_id}/redo", json={"user": "tester"})
+        self.assertEqual(redo.status_code, 200)
+        drafts = json.loads(drafts_path.read_text(encoding="utf-8"))
+        self.assertEqual(drafts["references"][reference_id]["reference_vi"], "BAN_DICH_B_UNIQUE")
+        csv_text = csv_path.read_text(encoding="utf-8")
+        self.assertIn("BAN_DICH_B_UNIQUE", csv_text)
+        self.assertNotIn("BAN_DICH_A_UNIQUE", csv_text)
 
     def test_patch_metadata_persists(self):
         response = self.client.patch("/api/projects/gold_demo_01/metadata", json={

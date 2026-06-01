@@ -1,6 +1,7 @@
 from flask import Blueprint, request
 
 from routes.common import error, ok
+from services.history import record_history
 from services.mutations import (
     MutationError,
     add_entity_from_selection,
@@ -34,6 +35,10 @@ def _project(doc_id: str):
     return get_project_path(doc_id)
 
 
+def _history(project_path, *, action: str, label: str, target: dict, user: str, operation):
+    return record_history(project_path, action=action, label=label, target=target, user=user, operation=operation)
+
+
 def _handle(exc: Exception):
     if isinstance(exc, MutationError):
         return error(exc.code, str(exc), exc.status)
@@ -50,7 +55,16 @@ def _handle(exc: Exception):
 def update_metadata(doc_id: str):
     payload = _payload()
     try:
-        return ok(patch_metadata(_project(doc_id), payload, _user(payload)))
+        project_path = _project(doc_id)
+        user = _user(payload)
+        return ok(_history(
+            project_path,
+            action="patch_metadata",
+            label="Edit metadata",
+            target={"doc_id": doc_id, "fields": sorted(set(payload) & {"title", "author", "domain", "genre", "source_format", "license", "source_url", "contamination_risk"})},
+            user=user,
+            operation=lambda: patch_metadata(project_path, payload, user),
+        ))
     except Exception as exc:
         return _handle(exc)
 
@@ -59,7 +73,17 @@ def update_metadata(doc_id: str):
 def update_block(doc_id: str, block_id: str):
     payload = _payload()
     try:
-        return ok(patch_block(_project(doc_id), block_id, payload, _user(payload)))
+        project_path = _project(doc_id)
+        user = _user(payload)
+        fields = sorted(set(payload) & {"clean_text", "block_type", "is_chapter_opening", "quality_flags", "discourse"})
+        return ok(_history(
+            project_path,
+            action="patch_block",
+            label=f"Edit {', '.join(fields) or 'block'} on {block_id}",
+            target={"doc_id": doc_id, "block_id": block_id, "fields": fields},
+            user=user,
+            operation=lambda: patch_block(project_path, block_id, payload, user),
+        ))
     except Exception as exc:
         return _handle(exc)
 
@@ -68,7 +92,17 @@ def update_block(doc_id: str, block_id: str):
 def update_block_review(doc_id: str, block_id: str):
     payload = _payload()
     try:
-        return ok(patch_block_review(_project(doc_id), block_id, payload, _user(payload)))
+        project_path = _project(doc_id)
+        user = _user(payload)
+        reviewed = bool(payload.get("reviewed"))
+        return ok(_history(
+            project_path,
+            action="patch_block_review",
+            label=("Mark reviewed " if reviewed else "Mark unreviewed ") + block_id,
+            target={"doc_id": doc_id, "block_id": block_id},
+            user=user,
+            operation=lambda: patch_block_review(project_path, block_id, payload, user),
+        ))
     except Exception as exc:
         return _handle(exc)
 
@@ -77,7 +111,17 @@ def update_block_review(doc_id: str, block_id: str):
 def create_glossary_from_selection(doc_id: str):
     payload = _payload()
     try:
-        return ok(add_glossary_from_selection(_project(doc_id), payload, _user(payload)), status=201)
+        project_path = _project(doc_id)
+        user = _user(payload)
+        block_id = str(payload.get("block_id") or "")
+        return ok(_history(
+            project_path,
+            action="add_glossary_from_selection",
+            label=f"Add glossary term on {block_id}",
+            target={"doc_id": doc_id, "block_id": block_id, "kind": "glossary"},
+            user=user,
+            operation=lambda: add_glossary_from_selection(project_path, payload, user),
+        ), status=201)
     except Exception as exc:
         return _handle(exc)
 
@@ -86,7 +130,17 @@ def create_glossary_from_selection(doc_id: str):
 def update_glossary(doc_id: str, term_id: str):
     payload = _payload()
     try:
-        return ok(patch_glossary(_project(doc_id), term_id, payload, _user(payload)))
+        project_path = _project(doc_id)
+        user = _user(payload)
+        fields = sorted(set(payload) & {"source_term", "expected_target", "allowed_variants", "forbidden_variants", "status", "domain", "chapter_scope", "annotated_by", "confidence"})
+        return ok(_history(
+            project_path,
+            action="patch_glossary",
+            label=f"Edit glossary {term_id}",
+            target={"doc_id": doc_id, "term_id": term_id, "fields": fields},
+            user=user,
+            operation=lambda: patch_glossary(project_path, term_id, payload, user),
+        ))
     except Exception as exc:
         return _handle(exc)
 
@@ -95,7 +149,16 @@ def update_glossary(doc_id: str, term_id: str):
 def remove_glossary(doc_id: str, term_id: str):
     payload = _payload()
     try:
-        return ok(delete_glossary(_project(doc_id), term_id, _user(payload)))
+        project_path = _project(doc_id)
+        user = _user(payload)
+        return ok(_history(
+            project_path,
+            action="delete_glossary",
+            label=f"Delete glossary {term_id}",
+            target={"doc_id": doc_id, "term_id": term_id},
+            user=user,
+            operation=lambda: delete_glossary(project_path, term_id, user),
+        ))
     except Exception as exc:
         return _handle(exc)
 
@@ -104,7 +167,17 @@ def remove_glossary(doc_id: str, term_id: str):
 def create_entity_from_selection(doc_id: str):
     payload = _payload()
     try:
-        return ok(add_entity_from_selection(_project(doc_id), payload, _user(payload)), status=201)
+        project_path = _project(doc_id)
+        user = _user(payload)
+        block_id = str(payload.get("block_id") or "")
+        return ok(_history(
+            project_path,
+            action="add_entity_from_selection",
+            label=f"Add entity mention on {block_id}",
+            target={"doc_id": doc_id, "block_id": block_id, "kind": "entity"},
+            user=user,
+            operation=lambda: add_entity_from_selection(project_path, payload, user),
+        ), status=201)
     except Exception as exc:
         return _handle(exc)
 
@@ -113,7 +186,17 @@ def create_entity_from_selection(doc_id: str):
 def update_entity(doc_id: str, entity_id: str):
     payload = _payload()
     try:
-        return ok(patch_entity(_project(doc_id), entity_id, payload, _user(payload)))
+        project_path = _project(doc_id)
+        user = _user(payload)
+        fields = sorted(set(payload) & {"canonical_source", "canonical_target", "aliases_source", "aliases_target", "pronoun_policy", "gender", "entity_type", "annotated_by", "confidence"})
+        return ok(_history(
+            project_path,
+            action="patch_entity",
+            label=f"Edit entity {entity_id}",
+            target={"doc_id": doc_id, "entity_id": entity_id, "fields": fields},
+            user=user,
+            operation=lambda: patch_entity(project_path, entity_id, payload, user),
+        ))
     except Exception as exc:
         return _handle(exc)
 
@@ -122,6 +205,16 @@ def update_entity(doc_id: str, entity_id: str):
 def update_summary(doc_id: str, chapter_id: str):
     payload = _payload()
     try:
-        return ok(patch_summary(_project(doc_id), chapter_id, payload, _user(payload)))
+        project_path = _project(doc_id)
+        user = _user(payload)
+        fields = sorted(set(payload) & {"summary_source", "source", "characters_present", "key_events", "setting", "emotional_tone", "motifs", "summary_target", "open_threads", "translation_notes", "confidence"})
+        return ok(_history(
+            project_path,
+            action="patch_summary",
+            label=f"Edit summary {chapter_id}",
+            target={"doc_id": doc_id, "chapter_id": chapter_id, "fields": fields},
+            user=user,
+            operation=lambda: patch_summary(project_path, chapter_id, payload, user),
+        ))
     except Exception as exc:
         return _handle(exc)

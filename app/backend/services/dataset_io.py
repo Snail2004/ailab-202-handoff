@@ -121,6 +121,8 @@ def read_jobs(project_path: Path) -> list[dict[str, Any]]:
 
 
 def read_dataset(project_path: Path) -> dict[str, Any]:
+    from services.history import history_state
+
     canonical = project_path / "canonical"
     document = read_json(canonical / DATASET_FILES["document"])
     chapters, blocks = flatten_document(document)
@@ -136,4 +138,5 @@ def read_dataset(project_path: Path) -> dict[str, Any]:
         "reference_drafts": read_reference_drafts(project_path),
         "jobs": read_jobs(project_path),
         "review_state": read_review_state(project_path, document),
+        "history_state": history_state(project_path),
     }

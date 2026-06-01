@@ -50,5 +50,7 @@ Ic.filter = mk(<path d="M2.5 4h11l-4.2 5v3.5L6.7 14V9z" />);
 Ic.quote = mk(<><path d="M4 9.5C4 7 5.5 5.5 7 5.5M4 9.5h2.5v-2.5" /><path d="M9.5 9.5C9.5 7 11 5.5 12.5 5.5M9.5 9.5H12v-2.5" /></>, { w: 1.3 });
 Ic.sparkle = mk(<path d="M8 2.5l1.3 3.4L12.5 7 9.3 8.1 8 11.5 6.7 8.1 3.5 7l3.2-1.1z" />);
 Ic.refresh = mk(<><path d="M12.5 6.5A4.5 4.5 0 1 0 13 9.5" /><path d="M12.5 3v3.5H9" /></>);
+Ic.undo = mk(<><path d="M6.5 4L3.5 7l3 3" /><path d="M4 7h5.5A3.5 3.5 0 1 1 6 10.5" /></>);
+Ic.redo = mk(<><path d="M9.5 4l3 3-3 3" /><path d="M12 7H6.5A3.5 3.5 0 1 0 10 10.5" /></>);
 
 window.Ic = Ic;

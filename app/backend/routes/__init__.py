@@ -2,6 +2,7 @@ from flask import Flask
 
 from routes.dataset import bp as dataset_bp
 from routes.edits import bp as edits_bp
+from routes.history import bp as history_bp
 from routes.package import bp as package_bp
 from routes.projects import bp as projects_bp
 from routes.references import bp as references_bp
@@ -15,3 +16,4 @@ def register_blueprints(app: Flask) -> None:
     app.register_blueprint(edits_bp, url_prefix="/api")
     app.register_blueprint(references_bp, url_prefix="/api")
     app.register_blueprint(package_bp, url_prefix="/api")
+    app.register_blueprint(history_bp, url_prefix="/api")

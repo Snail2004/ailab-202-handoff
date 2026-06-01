@@ -349,7 +349,38 @@ function Bar({ label, done, total, tone }) {
   );
 }
 
-function ProgressTab({ stats, freezeReasons }) {
+function shortTarget(target) {
+  if (!target) return "";
+  return target.block_id || target.term_id || target.entity_id || target.chapter_id || target.reference_id || target.doc_id || "";
+}
+
+function HistoryList({ history }) {
+  const recent = history?.recent || [];
+  return (
+    <div className="hist-panel">
+      <div className="hist-head">
+        <span><Ic.clock size={12} />History</span>
+        <span className="hist-actions mono">
+          {history?.can_undo ? "undo ready" : "no undo"} · {history?.can_redo ? "redo ready" : "no redo"}
+        </span>
+      </div>
+      {!recent.length ? (
+        <div className="hist-empty">No undoable changes yet.</div>
+      ) : recent.map(event => (
+        <div key={event.id} className="hist-row">
+          <span className="hist-dot" />
+          <span className="hist-main">
+            <span className="hist-label">{event.label || event.action}</span>
+            <span className="hist-meta mono">{event.user || "local"} · {shortTarget(event.target)}</span>
+          </span>
+          <span className="hist-time mono">{(event.ts || "").slice(11, 16)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ProgressTab({ stats, freezeReasons, history }) {
   return (
     <div className="tab-body">
       <Bar label="Blocks reviewed" done={stats.reviewed} total={stats.totalBlocks} />
@@ -362,6 +393,7 @@ function ProgressTab({ stats, freezeReasons }) {
         <Ic.snow size={12} />
         <span>{freezeReasons.length ? "Freeze is blocked: " + freezeReasons.join("; ") : "Freeze gates are clear."}</span>
       </div>
+      <HistoryList history={history} />
     </div>
   );
 }
@@ -411,7 +443,7 @@ function RightPanel({ active, onSetActive, counts, ctx }) {
                   {t.id === "summary" && <SummaryTab summary={ctx.summary} entities={ctx.allEntities} onUpdateSummary={ctx.onUpdateSummary} />}
                   {t.id === "reference" && <ReferenceTab refs={ctx.references} block={ctx.block} onUpdateReference={ctx.onUpdateReference} onCreateReference={ctx.onCreateReference} onSaveDraft={ctx.onSaveDraft} onMarkReviewed={ctx.onMarkReviewedReference} onLockReference={ctx.onLockReference} />}
                   {t.id === "validate" && <ValidateTab errors={ctx.errors} onJump={ctx.onJump} />}
-                  {t.id === "progress" && <ProgressTab stats={ctx.stats} freezeReasons={ctx.freezeReasons} />}
+                  {t.id === "progress" && <ProgressTab stats={ctx.stats} freezeReasons={ctx.freezeReasons} history={ctx.history} />}
                 </div>
               )}
             </div>
