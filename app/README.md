@@ -10,14 +10,14 @@ Upload source -> Extract -> Review/Clean -> Annotate -> Validate -> Export/Freez
 
 Không phải app dịch, không phải app OCR, không phải PDF layout editor.
 
-## Kiến trúc khuyến nghị
+## Kiến Trúc Khuyến Nghị
 
 - Backend: Python Flask.
 - Frontend: vanilla HTML/CSS/JS.
 - Data: local filesystem project workspace.
 - Validation: backend gọi `dataset_spec/tools/validate.py`.
 
-## Module code gợi ý
+## Module Code Gợi Ý
 
 | Module | Trách nhiệm |
 |---|---|
@@ -28,7 +28,7 @@ Không phải app dịch, không phải app OCR, không phải PDF layout editor
 | Validation/export | validate, error view, freeze/export |
 | Persistence | autosave, logs, resume |
 
-## UI prototype
+## UI Prototype
 
 `prototype/` chứa bản UI prototype tải từ Claude Design. Đây là wireframe tương tác để tham khảo khi code frontend thật, chưa phải backend hoàn chỉnh.
 
@@ -70,3 +70,35 @@ Invoke-RestMethod -Method Post http://127.0.0.1:5000/api/projects/gold_demo_01/v
 ```
 
 Lần chạy đầu, backend seed `gold_demo_01` từ `dataset_spec/sample/gold_demo_01` vào `ailab_projects/gold_demo_01`. Workspace này là dữ liệu runtime local và đã được Git ignore.
+
+## Backend Phase 2
+
+Phase 2 thêm các endpoint ghi chỉnh sửa thật xuống filesystem bằng atomic write. Các endpoint này vẫn giữ nguyên schema dataset hiện tại.
+
+Endpoints chính:
+
+```text
+PATCH  /api/projects/<doc_id>/metadata
+PATCH  /api/projects/<doc_id>/blocks/<block_id>
+PATCH  /api/projects/<doc_id>/review/blocks/<block_id>
+POST   /api/projects/<doc_id>/glossary/from-selection
+PATCH  /api/projects/<doc_id>/glossary/<term_id>
+DELETE /api/projects/<doc_id>/glossary/<term_id>
+POST   /api/projects/<doc_id>/entities/from-selection
+PATCH  /api/projects/<doc_id>/entities/<entity_id>
+PATCH  /api/projects/<doc_id>/summary/<chapter_id>
+```
+
+Nguyên tắc:
+
+- Không cho sửa các field read-only như `doc_id`, `schema_version`, `block_id`, `source_text`, `provenance`.
+- `from-selection` nhận `start/end` từ UI text selection và backend ghi span vào JSONL.
+- Sửa `clean_text` sẽ trả về `stale_spans` nếu span hiện có không còn khớp, đồng thời đánh dấu `needs_retag` trong `working/review_state.json`.
+- Delete glossary bị chặn nếu term đang `locked`, còn occurrence, hoặc còn được block tham chiếu.
+- Mỗi mutation đều ghi `logs/app_events.jsonl`.
+
+Chạy test backend:
+
+```powershell
+python -m unittest discover app\backend\tests
+```
