@@ -30,6 +30,13 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.get_json()["ok"])
 
+    def _split_txt_direct(self, source: str) -> tuple[list[dict], dict]:
+        from services.extraction import split_txt
+
+        report = {"skipped": []}
+        chapters = split_txt(source, report)
+        return chapters, report
+
     def _make_txt_project(self, doc_id: str, source: bytes | None = None) -> dict:
         self.client.post("/api/projects", json={
             "doc_id": doc_id,
@@ -490,7 +497,7 @@ Project Gutenberg footer should not survive.
         self.assertEqual(extract.status_code, 201)
         dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
         self.assertEqual(dataset["document"]["metadata"]["source_format"], "txt")
-        self.assertEqual(dataset["document"]["metadata"]["pipeline_version"], "0.3.0")
+        self.assertEqual(dataset["document"]["metadata"]["pipeline_version"], "0.3.1")
         report = self._extraction_report(doc_id)
         self.assertEqual(report["source_format_mismatch"], {"declared": "epub", "actual": "txt"})
 
@@ -559,6 +566,78 @@ Alice arrived.
         self.assertEqual(report["toc"]["chapters_matched"], 1)
         self.assertTrue(report["toc"]["fallback_used"])
         self.assertTrue(report["toc"]["low_confidence"])
+
+    def test_txt_toc_duplicate_standalone_match_is_low_confidence(self):
+        source = """Contents
+
+THE DOOR
+THE WINDOW
+
+THE DOOR
+
+Door chapter starts normally.
+
+THE WINDOW
+
+FALSE: this line is a prose mention or running header inside door chapter.
+
+More door-chapter prose continues here.
+
+THE WINDOW
+
+REAL window chapter prose.
+"""
+        chapters, report = self._split_txt_direct(source)
+        self.assertEqual([chapter["title"] for chapter in chapters], ["THE DOOR", "THE WINDOW"])
+        self.assertEqual(report["toc"]["match_rate"], 1.0)
+        self.assertFalse(report["toc"]["fallback_used"])
+        self.assertTrue(report["toc"]["low_confidence"])
+        self.assertEqual(report["toc"]["ambiguous_titles"], ["THE WINDOW"])
+        self.assertEqual(report["toc"]["ambiguous_count"], 1)
+
+    def test_txt_running_header_repeat_is_low_confidence(self):
+        source = """Contents
+
+CHAPTER I
+CHAPTER II
+
+CHAPTER I
+
+Alice arrived.
+
+CHAPTER I
+
+More page text after a repeated running header.
+
+CHAPTER II
+
+Bob waited.
+"""
+        _, report = self._split_txt_direct(source)
+        self.assertTrue(report["toc"]["low_confidence"])
+        self.assertEqual(report["toc"]["ambiguous_titles"], ["CHAPTER I"])
+
+    def test_txt_clean_toc_is_not_overflagged(self):
+        source = """Contents
+
+CHAPTER I
+CHAPTER II
+
+CHAPTER I
+
+Alice arrived.
+
+CHAPTER II
+
+Bob waited.
+"""
+        chapters, report = self._split_txt_direct(source)
+        self.assertEqual([chapter["title"] for chapter in chapters], ["CHAPTER I", "CHAPTER II"])
+        self.assertEqual(report["toc"]["match_rate"], 1.0)
+        self.assertFalse(report["toc"]["fallback_used"])
+        self.assertFalse(report["toc"]["low_confidence"])
+        self.assertEqual(report["toc"]["ambiguous_titles"], [])
+        self.assertEqual(report["toc"]["ambiguous_count"], 0)
 
     def test_epub_ncx_toc_names_chapters_and_skips_non_toc_spine(self):
         doc_id = "extract_epub_ncx_toc"
@@ -644,6 +723,42 @@ Alice arrived.
         self._assert_toc_report(report)
         self.assertEqual(report["toc"]["toc_source"], "nav")
         self.assertFalse(report["toc"]["fallback_used"])
+
+    def test_epub_nav_duplicate_title_is_low_confidence(self):
+        doc_id = "extract_epub_nav_duplicate"
+        self.client.post("/api/projects", json={
+            "doc_id": doc_id,
+            "metadata": {
+                "title": "Duplicate Nav EPUB",
+                "author": "Tester",
+                "source_format": "epub",
+                "license": "public-domain",
+                "contamination_risk": "low",
+            },
+        })
+        opf = """<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c2" href="c2.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="c1"/><itemref idref="c2"/></spine>
+</package>"""
+        epub = self._minimal_epub(opf, {
+            "nav.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body>
+<nav epub:type="toc"><ol><li><a href="c1.xhtml">Same Title</a></li><li><a href="c2.xhtml">Same Title</a></li></ol></nav>
+</body></html>""",
+            "c1.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Alice arrived.</p></body></html>""",
+            "c2.xhtml": """<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Bob waited.</p></body></html>""",
+        })
+        self.client.post(f"/api/projects/{doc_id}/source", data={"file": (epub, "source.epub")}, content_type="multipart/form-data")
+        extract = self.client.post(f"/api/projects/{doc_id}/extract", json={"overwrite": False})
+        self.assertEqual(extract.status_code, 201)
+        report = self._extraction_report(doc_id)
+        self.assertEqual(report["toc"]["toc_source"], "nav")
+        self.assertTrue(report["toc"]["low_confidence"])
+        self.assertEqual(report["toc"]["ambiguous_titles"], ["Same Title"])
 
     def test_epub_front_matter_guide_entries_are_skipped(self):
         doc_id = "extract_epub_front_matter"

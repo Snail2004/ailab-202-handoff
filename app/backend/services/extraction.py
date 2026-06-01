@@ -59,6 +59,8 @@ def default_toc_report() -> dict[str, Any]:
         "match_rate": 0.0,
         "fallback_used": True,
         "low_confidence": False,
+        "ambiguous_titles": [],
+        "ambiguous_count": 0,
     }
 
 
@@ -136,10 +138,13 @@ def set_toc_report(
     chapters_matched: int,
     fallback_used: bool,
     low_confidence: bool,
+    ambiguous_titles: list[str] | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> None:
     if report is None:
         return
     match_rate = chapters_matched / toc_items if toc_items else 0.0
+    ambiguous_titles = ambiguous_titles or []
     report["toc"] = {
         "toc_source": source,
         "toc_items": toc_items,
@@ -147,7 +152,11 @@ def set_toc_report(
         "match_rate": round(match_rate, 4),
         "fallback_used": fallback_used,
         "low_confidence": low_confidence,
+        "ambiguous_titles": ambiguous_titles,
+        "ambiguous_count": len(ambiguous_titles),
     }
+    if extra:
+        report["toc"].update(extra)
 
 
 def sha256_file(path: Path) -> str:
@@ -353,6 +362,16 @@ def _split_txt_with_toc(parts: list[dict[str, Any]], entries: list[str], body_st
     return chapters, len(matches)
 
 
+def _txt_ambiguous_titles(parts: list[dict[str, Any]], entries: list[str], body_start: int) -> list[str]:
+    titles_by_key = {toc_key(entry): normalize_toc_title(entry) for entry in entries}
+    counts = {key: 0 for key in titles_by_key}
+    for part in parts[body_start:]:
+        key = toc_key(part["text"])
+        if key in counts:
+            counts[key] += 1
+    return [titles_by_key[key] for key, count in counts.items() if count > 1]
+
+
 def split_txt(raw: str, report: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     cleaned, gutenberg_report = clean_gutenberg_text(raw)
     if report is not None:
@@ -360,12 +379,13 @@ def split_txt(raw: str, report: dict[str, Any] | None = None) -> list[dict[str, 
     parts = _txt_parts(cleaned)
     _, body_start, toc_entries = _find_text_toc(parts)
     if toc_entries:
+        ambiguous_titles = _txt_ambiguous_titles(parts, toc_entries, body_start)
         toc_chapters, matched = _split_txt_with_toc(parts, toc_entries, body_start)
         match_rate = matched / len(toc_entries) if toc_entries else 0.0
         if toc_chapters and match_rate >= TOC_MATCH_THRESHOLD:
-            set_toc_report(report, "text", len(toc_entries), matched, False, False)
+            set_toc_report(report, "text", len(toc_entries), matched, False, bool(ambiguous_titles), ambiguous_titles)
             return toc_chapters
-        set_toc_report(report, "text", len(toc_entries), matched, True, True)
+        set_toc_report(report, "text", len(toc_entries), matched, True, True, ambiguous_titles)
         return _split_txt_legacy(parts)
 
     set_toc_report(report, "none", 0, 0, True, False)
@@ -591,11 +611,36 @@ def split_epub(path: Path, report: dict[str, Any] | None = None) -> list[dict[st
                 entry for entry in toc_entries
                 if not is_toc_boilerplate_title(entry["title"]) and spine_index.get(entry["file"], -1) > toc_front_index
             ]
+        title_counts: dict[str, int] = {}
+        target_counts: dict[str, int] = {}
+        for entry in toc_entries:
+            title_counts[toc_key(entry["title"])] = title_counts.get(toc_key(entry["title"]), 0) + 1
+            target_counts[entry["file"]] = target_counts.get(entry["file"], 0) + 1
+        duplicate_titles = sorted({
+            normalize_toc_title(entry["title"])
+            for entry in toc_entries
+            if title_counts.get(toc_key(entry["title"]), 0) > 1
+        })
+        duplicate_targets = sorted(file_name for file_name, count in target_counts.items() if count > 1)
+        unresolved_targets = sorted({entry["file"] for entry in toc_entries if entry["file"] not in spine_files})
         matched_toc_items = sum(1 for entry in toc_entries if entry["file"] in spine_files)
         toc_match_rate = matched_toc_items / len(toc_entries) if toc_entries else 0.0
         use_toc = bool(toc_entries) and toc_match_rate >= TOC_MATCH_THRESHOLD
         if toc_entries:
-            set_toc_report(report, toc_source, len(toc_entries), matched_toc_items, not use_toc, not use_toc)
+            toc_ambiguous = bool(duplicate_titles or duplicate_targets or unresolved_targets)
+            set_toc_report(
+                report,
+                toc_source,
+                len(toc_entries),
+                matched_toc_items,
+                not use_toc,
+                (not use_toc) or toc_ambiguous,
+                duplicate_titles,
+                {
+                    "duplicate_targets": duplicate_targets,
+                    "unresolved_targets": unresolved_targets,
+                },
+            )
         else:
             set_toc_report(report, "none", 0, 0, True, False)
         toc_files = {entry["file"] for entry in toc_entries}
