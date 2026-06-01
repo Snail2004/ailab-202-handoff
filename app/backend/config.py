@@ -10,6 +10,8 @@ DATASET_SPEC_ROOT = HANDOFF_ROOT / "dataset_spec"
 SCHEMA_DIR = DATASET_SPEC_ROOT / "schema"
 VALIDATOR_SCRIPT = DATASET_SPEC_ROOT / "tools" / "validate.py"
 SAMPLE_ROOT = DATASET_SPEC_ROOT / "sample"
+TEMPLATE_ROOT = DATASET_SPEC_ROOT / "templates"
+TRANSLATION_REVIEW_TEMPLATE = TEMPLATE_ROOT / "translation_review_log.csv"
 
 PROJECTS_ROOT = Path(os.environ.get("AILAB_PROJECTS_ROOT", HANDOFF_ROOT / "ailab_projects")).resolve()
 HOST = os.environ.get("AILAB_BACKEND_HOST", "127.0.0.1")
@@ -24,3 +26,7 @@ DATASET_FILES = {
 }
 
 PROJECT_SUBDIRS = ("raw", "canonical", "working", "logs", "exports")
+ALLOWED_SOURCE_EXTENSIONS = {".txt", ".epub"}
+SCHEMA_VERSION = "1.4.0"
+PIPELINE_VERSION = "0.1.0"
+EXTRACTION_TOOL = "ailab-backend-extractor"

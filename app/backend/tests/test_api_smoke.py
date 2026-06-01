@@ -2,7 +2,9 @@ import os
 import sys
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
+from zipfile import ZipFile
 
 
 class BackendApiSmokeTest(unittest.TestCase):
@@ -36,6 +38,8 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertTrue(dataset["ok"])
         self.assertEqual(len(dataset["data"]["blocks"]), 14)
         self.assertEqual(len(dataset["data"]["chapters"]), 2)
+        self.assertIn("reference_drafts", dataset["data"])
+        self.assertIn("jobs", dataset["data"])
 
     def test_validate_project(self):
         response = self.client.post("/api/projects/gold_demo_01/validate")
@@ -141,6 +145,204 @@ class BackendApiSmokeTest(unittest.TestCase):
         })
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["data"]["source"], "human")
+
+    def test_project_upload_extract_job_and_validate(self):
+        doc_id = "phase3_txt"
+        create = self.client.post("/api/projects", json={
+            "doc_id": doc_id,
+            "metadata": {
+                "title": "Phase 3 TXT",
+                "author": "Tester",
+                "source_format": "txt",
+                "license": "public-domain",
+                "contamination_risk": "low",
+            },
+        })
+        self.assertEqual(create.status_code, 201)
+
+        upload = self.client.post(
+            f"/api/projects/{doc_id}/source",
+            data={"file": (BytesIO(b"Chapter 1\n\n\"Hello,\" Alice said.\n\nShe waited.\n\nChapter 2\n\nThe room was quiet."), "source.txt")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(upload.status_code, 201)
+
+        extract = self.client.post(f"/api/projects/{doc_id}/extract", json={"overwrite": False, "user": "tester"})
+        self.assertEqual(extract.status_code, 201)
+        job = extract.get_json()["data"]
+        self.assertEqual(job["status"], "done")
+        self.assertEqual(job["document"]["chapters"], 2)
+
+        job_status = self.client.get(f"/api/projects/{doc_id}/jobs/{job['job_id']}").get_json()
+        self.assertEqual(job_status["data"]["status"], "done")
+
+        validate = self.client.post(f"/api/projects/{doc_id}/validate").get_json()
+        self.assertTrue(validate["data"]["ok"])
+
+        blocked = self.client.post(f"/api/projects/{doc_id}/extract", json={"overwrite": False}).get_json()
+        self.assertFalse(blocked["ok"])
+        self.assertEqual(blocked["errors"][0]["code"], "confirm_overwrite_required")
+
+    def test_epub_upload_extract_and_validate(self):
+        doc_id = "phase3_epub"
+        self.client.post("/api/projects", json={
+            "doc_id": doc_id,
+            "metadata": {
+                "title": "Phase 3 EPUB",
+                "author": "Tester",
+                "source_format": "epub",
+                "license": "public-domain",
+                "contamination_risk": "low",
+            },
+        })
+        epub = BytesIO()
+        with ZipFile(epub, "w") as zf:
+            zf.writestr("META-INF/container.xml", """<?xml version="1.0"?>
+<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+  <rootfiles><rootfile full-path="OPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>""")
+            zf.writestr("OPS/content.opf", """<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <manifest><item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/></manifest>
+  <spine><itemref idref="c1"/></spine>
+</package>""")
+            zf.writestr("OPS/c1.xhtml", """<html xmlns="http://www.w3.org/1999/xhtml"><body>
+<h1>Chapter One</h1><p>Alice arrived.</p><p>"Hello," Bob said.</p>
+</body></html>""")
+        epub.seek(0)
+        upload = self.client.post(
+            f"/api/projects/{doc_id}/source",
+            data={"file": (epub, "source.epub")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(upload.status_code, 201)
+        extract = self.client.post(f"/api/projects/{doc_id}/extract", json={"overwrite": False})
+        self.assertEqual(extract.status_code, 201)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertEqual(len(dataset["chapters"]), 1)
+        self.assertTrue(any(block["block_type"] == "dialogue" for block in dataset["blocks"]))
+        validate = self.client.post(f"/api/projects/{doc_id}/validate").get_json()
+        self.assertTrue(validate["data"]["ok"])
+
+    def test_pdf_upload_is_rejected(self):
+        doc_id = "phase3_pdf"
+        self.client.post("/api/projects", json={"doc_id": doc_id, "metadata": {"license": "public-domain", "contamination_risk": "low"}})
+        upload = self.client.post(
+            f"/api/projects/{doc_id}/source",
+            data={"file": (BytesIO(b"%PDF-1.4"), "source.pdf")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(upload.status_code, 400)
+        self.assertIn("PDF logical extraction", upload.get_json()["errors"][0]["message"])
+
+    def test_reference_lifecycle_and_freeze(self):
+        doc_id = "phase4_freeze"
+        self.client.post("/api/projects", json={
+            "doc_id": doc_id,
+            "metadata": {
+                "title": "Phase 4 Freeze",
+                "author": "Tester",
+                "source_format": "txt",
+                "license": "public-domain",
+                "contamination_risk": "low",
+            },
+        })
+        self.client.post(
+            f"/api/projects/{doc_id}/source",
+            data={"file": (BytesIO(b"Chapter 1\n\nAlice arrived.\n\n\"Good morning,\" Bob said."), "source.txt")},
+            content_type="multipart/form-data",
+        )
+        self.client.post(f"/api/projects/{doc_id}/extract", json={"overwrite": False, "user": "tester"})
+
+        blocked = self.client.post(f"/api/projects/{doc_id}/freeze", json={"user": "tester"})
+        self.assertEqual(blocked.status_code, 409)
+        reasons = blocked.get_json()["errors"][0]["reasons"]
+        self.assertTrue(any("unreviewed" in reason for reason in reasons))
+
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        for block in dataset["blocks"]:
+            self.client.patch(f"/api/projects/{doc_id}/review/blocks/{block['block_id']}", json={
+                "reviewed": True,
+                "reviewed_by": "tester",
+            })
+        chapter_id = dataset["chapters"][0]["chapter_id"]
+        self.client.patch(f"/api/projects/{doc_id}/summary/{chapter_id}", json={
+            "summary_source": "Alice arrives and Bob greets her.",
+            "source": "human",
+        })
+        block_id = next(block["block_id"] for block in dataset["blocks"] if block["block_type"] != "heading")
+        draft = self.client.post(f"/api/projects/{doc_id}/references/draft", json={
+            "block_id": block_id,
+            "draft_vi": "Alice đến.",
+            "source": "human",
+            "translated_by": "translator_01",
+        })
+        self.assertEqual(draft.status_code, 201)
+        reference_id = draft.get_json()["data"]["reference_id"]
+
+        missing_source = self.client.post(f"/api/projects/{doc_id}/references/{reference_id}/review", json={
+            "source": "",
+            "reviewed_by": "reviewer_01",
+        })
+        self.assertEqual(missing_source.status_code, 400)
+
+        reviewed = self.client.post(f"/api/projects/{doc_id}/references/{reference_id}/review", json={
+            "source": "human",
+            "reference_vi": "Alice đến.",
+            "reviewed_by": "reviewer_01",
+        })
+        self.assertEqual(reviewed.status_code, 200)
+        self.assertEqual(reviewed.get_json()["data"]["status"], "reviewed")
+
+        locked = self.client.post(f"/api/projects/{doc_id}/references/{reference_id}/lock")
+        self.assertEqual(locked.status_code, 200)
+        self.assertEqual(locked.get_json()["data"]["status"], "locked")
+
+        export = self.client.post(f"/api/projects/{doc_id}/export")
+        self.assertEqual(export.status_code, 201)
+        self.assertIn("zip", export.get_json()["data"])
+
+        freeze = self.client.post(f"/api/projects/{doc_id}/freeze")
+        self.assertEqual(freeze.status_code, 201)
+        self.assertTrue(freeze.get_json()["data"]["frozen"])
+
+    def test_freeze_is_blocked_by_draft_reference(self):
+        doc_id = "phase4_draft"
+        self.client.post("/api/projects", json={
+            "doc_id": doc_id,
+            "metadata": {
+                "title": "Phase 4 Draft",
+                "source_format": "txt",
+                "license": "public-domain",
+                "contamination_risk": "low",
+            },
+        })
+        self.client.post(
+            f"/api/projects/{doc_id}/source",
+            data={"file": (BytesIO(b"Chapter 1\n\nAlice arrived."), "source.txt")},
+            content_type="multipart/form-data",
+        )
+        self.client.post(f"/api/projects/{doc_id}/extract", json={"overwrite": False})
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        for block in dataset["blocks"]:
+            self.client.patch(f"/api/projects/{doc_id}/review/blocks/{block['block_id']}", json={
+                "reviewed": True,
+                "reviewed_by": "tester",
+            })
+        self.client.patch(f"/api/projects/{doc_id}/summary/{dataset['chapters'][0]['chapter_id']}", json={
+            "summary_source": "Alice arrives.",
+            "source": "human",
+        })
+        block_id = next(block["block_id"] for block in dataset["blocks"] if block["block_type"] != "heading")
+        self.client.post(f"/api/projects/{doc_id}/references/draft", json={
+            "block_id": block_id,
+            "draft_vi": "Alice đến.",
+            "source": "human",
+        })
+        blocked = self.client.post(f"/api/projects/{doc_id}/freeze")
+        self.assertEqual(blocked.status_code, 409)
+        reasons = blocked.get_json()["errors"][0]["reasons"]
+        self.assertTrue(any("draft reference" in reason for reason in reasons))
 
 
 if __name__ == "__main__":

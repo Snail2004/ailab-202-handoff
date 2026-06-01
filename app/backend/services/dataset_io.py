@@ -33,6 +33,16 @@ def atomic_write_text(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp")
+    with tmp.open("wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
 def write_json_atomic(path: Path, data: dict[str, Any]) -> None:
     atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
@@ -90,6 +100,26 @@ def read_review_state(project_path: Path, document: dict[str, Any]) -> dict[str,
     return read_json(path)
 
 
+def read_reference_drafts(project_path: Path) -> dict[str, Any]:
+    path = project_path / "working" / "drafts.json"
+    if not path.exists():
+        return {"references": {}}
+    return read_json(path)
+
+
+def read_jobs(project_path: Path) -> list[dict[str, Any]]:
+    jobs_dir = project_path / "working" / "jobs"
+    if not jobs_dir.exists():
+        return []
+    jobs = []
+    for path in sorted(jobs_dir.glob("*.json")):
+        try:
+            jobs.append(read_json(path))
+        except (OSError, json.JSONDecodeError):
+            continue
+    return jobs
+
+
 def read_dataset(project_path: Path) -> dict[str, Any]:
     canonical = project_path / "canonical"
     document = read_json(canonical / DATASET_FILES["document"])
@@ -103,5 +133,7 @@ def read_dataset(project_path: Path) -> dict[str, Any]:
         "entities": read_jsonl(canonical / DATASET_FILES["entities"]),
         "summaries": read_jsonl(canonical / DATASET_FILES["chapter_summaries"]),
         "references": read_jsonl(canonical / DATASET_FILES["manual_reference_subset"]),
+        "reference_drafts": read_reference_drafts(project_path),
+        "jobs": read_jobs(project_path),
         "review_state": read_review_state(project_path, document),
     }
