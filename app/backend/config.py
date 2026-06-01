@@ -1,0 +1,26 @@
+import os
+from pathlib import Path
+
+
+HANDOFF_ROOT = Path(__file__).resolve().parents[2]
+APP_ROOT = HANDOFF_ROOT / "app"
+BACKEND_ROOT = APP_ROOT / "backend"
+
+DATASET_SPEC_ROOT = HANDOFF_ROOT / "dataset_spec"
+SCHEMA_DIR = DATASET_SPEC_ROOT / "schema"
+VALIDATOR_SCRIPT = DATASET_SPEC_ROOT / "tools" / "validate.py"
+SAMPLE_ROOT = DATASET_SPEC_ROOT / "sample"
+
+PROJECTS_ROOT = Path(os.environ.get("AILAB_PROJECTS_ROOT", HANDOFF_ROOT / "ailab_projects")).resolve()
+HOST = os.environ.get("AILAB_BACKEND_HOST", "127.0.0.1")
+PORT = int(os.environ.get("AILAB_BACKEND_PORT", "5000"))
+
+DATASET_FILES = {
+    "document": "document.json",
+    "glossary": "glossary.jsonl",
+    "entities": "entities.jsonl",
+    "chapter_summaries": "chapter_summaries.jsonl",
+    "manual_reference_subset": "manual_reference_subset.jsonl",
+}
+
+PROJECT_SUBDIRS = ("raw", "canonical", "working", "logs", "exports")

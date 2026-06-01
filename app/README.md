@@ -40,3 +40,33 @@ python -m http.server 8765 --bind 127.0.0.1
 ```
 
 Mở `http://127.0.0.1:8765/index.html`.
+
+## Backend Phase 1
+
+`backend/` chứa Flask API skeleton local cho AI-LAB Dataset Tool. Backend đọc dataset thật từ filesystem workspace và gọi `dataset_spec/tools/validate.py --json`.
+
+Chạy:
+
+```powershell
+cd app\backend
+python -m pip install -r requirements.txt
+python app.py
+```
+
+API mặc định:
+
+```text
+http://127.0.0.1:5000/api
+```
+
+Smoke checks:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:5000/api/health
+Invoke-RestMethod http://127.0.0.1:5000/api/projects
+Invoke-RestMethod http://127.0.0.1:5000/api/projects/gold_demo_01
+Invoke-RestMethod http://127.0.0.1:5000/api/projects/gold_demo_01/dataset
+Invoke-RestMethod -Method Post http://127.0.0.1:5000/api/projects/gold_demo_01/validate
+```
+
+Lần chạy đầu, backend seed `gold_demo_01` từ `dataset_spec/sample/gold_demo_01` vào `ailab_projects/gold_demo_01`. Workspace này là dữ liệu runtime local và đã được Git ignore.
