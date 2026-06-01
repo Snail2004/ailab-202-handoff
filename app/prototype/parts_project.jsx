@@ -1,19 +1,55 @@
-/* ===== PROJECT / SOURCE SCREEN: upload, metadata, extract ===== */
+/* ===== PROJECT / SOURCE SCREEN: project selection, upload, metadata, extract ===== */
 
-function ProjectSourceScreen({ docInfo, onPatchDoc, onBack, onExtract }) {
-  const [fileName, setFileName] = React.useState("austen_pp.epub");
+function ProjectSourceScreen({
+  projects,
+  activeDocId,
+  docInfo,
+  chapters,
+  blocks,
+  errors,
+  onSelectProject,
+  onCreateProject,
+  onPatchDoc,
+  onUploadSource,
+  onBack,
+  onExtract,
+}) {
+  const [file, setFile] = React.useState(null);
   const [confirmOverwrite, setConfirmOverwrite] = React.useState(false);
+  const [newDocId, setNewDocId] = React.useState("");
   const meta = docInfo.metadata || {};
   const prov = docInfo.provenance || {};
-  const extracted = !!prov.extraction_tool;
+  const extracted = blocks.length > 0;
+  const selectedProject = projects.find(p => p.doc_id === activeDocId);
 
   function patchMetadata(patch) {
-    onPatchDoc({ metadata: { ...meta, ...patch } });
+    onPatchDoc({ metadata: patch });
+  }
+
+  async function createFromForm() {
+    const docId = newDocId.trim();
+    if (!docId) return;
+    const created = await onCreateProject(docId, {
+      title: meta.title || docId,
+      author: meta.author || "",
+      domain: meta.domain || "literature",
+      genre: meta.genre || "novel",
+      source_format: meta.source_format || "txt",
+      license: meta.license || "",
+      source_url: meta.source_url || "",
+      contamination_risk: meta.contamination_risk || "low",
+    });
+    if (created) setNewDocId("");
+  }
+
+  async function uploadSelected() {
+    if (!file) return;
+    await onUploadSource(file, false);
   }
 
   function startExtract() {
     if (extracted) setConfirmOverwrite(true);
-    else onExtract(fileName);
+    else onExtract(false);
   }
 
   return (
@@ -22,10 +58,10 @@ function ProjectSourceScreen({ docInfo, onPatchDoc, onBack, onExtract }) {
         <div className="tb-left">
           <span className="tb-app"><span className="tb-logo">▧</span>AILAB <span className="tb-app-sub">Dataset Tool</span></span>
           <span className="tb-sep" />
-          <span className="tb-doc"><Ic.folder size={13} className="faint" /><span className="mono">{docInfo.doc_id}</span></span>
+          <span className="tb-doc"><Ic.folder size={13} className="faint" /><span className="mono">{activeDocId || "no_project"}</span></span>
         </div>
         <div className="tb-right">
-          <button className="btn" onClick={onBack}><Ic.arrowRight size={13} style={{ transform: "rotate(180deg)" }} />Back to workspace</button>
+          <button className="btn" onClick={onBack} disabled={!extracted}><Ic.arrowRight size={13} style={{ transform: "rotate(180deg)" }} />Back to workspace</button>
         </div>
       </div>
 
@@ -34,16 +70,31 @@ function ProjectSourceScreen({ docInfo, onPatchDoc, onBack, onExtract }) {
           <div>
             <div className="project-kicker">Project / Source</div>
             <h1>Prepare source metadata before annotation</h1>
-            <p>Upload a TXT/EPUB source, record provenance, then run extraction. Re-extracting requires confirmation because it can overwrite the current document draft.</p>
+            <p>Choose a local project, upload a TXT/EPUB source, record source metadata, then run extraction. Re-extracting requires confirmation because it can overwrite the current document draft.</p>
           </div>
           <div className="source-state">
-            <div className="srcstat-row"><span className="ss-dot ok" /><span className="ss-label">Source</span><span className="ss-val mono">{fileName || "not selected"}</span></div>
-            <div className="srcstat-row"><span className={"ss-dot " + (extracted ? "ok" : "bad")} /><span className="ss-label">Extracted</span><span className="ss-val mono">{extracted ? "14 blocks · 2 ch" : "not yet"}</span></div>
-            <div className="srcstat-row"><span className="ss-dot bad" /><span className="ss-label">Validation</span><span className="ss-val mono bad">2 errors</span></div>
+            <div className="srcstat-row"><span className={"ss-dot " + (selectedProject ? "ok" : "bad")} /><span className="ss-label">Project</span><span className="ss-val mono">{activeDocId || "not selected"}</span></div>
+            <div className="srcstat-row"><span className={"ss-dot " + (extracted ? "ok" : "bad")} /><span className="ss-label">Extracted</span><span className="ss-val mono">{extracted ? `${blocks.length} blocks · ${chapters.length} ch` : "not yet"}</span></div>
+            <div className="srcstat-row"><span className={"ss-dot " + (errors.length ? "bad" : "ok")} /><span className="ss-label">Validation</span><span className={"ss-val mono " + (errors.length ? "bad" : "")}>{errors.length ? `${errors.length} issue(s)` : "no report issues"}</span></div>
           </div>
         </div>
 
         <div className="project-grid">
+          <section className="project-panel">
+            <div className="panel-title"><Ic.folder size={14} />Local project</div>
+            <div className="project-form">
+              <FormField label="open project">
+                <select value={activeDocId || ""} onChange={e => onSelectProject(e.target.value)}>
+                  {projects.map(p => <option key={p.doc_id} value={p.doc_id}>{p.doc_id} · {p.status}</option>)}
+                </select>
+              </FormField>
+              <FormField label="new doc_id">
+                <input value={newDocId} placeholder="my_novel_01" onChange={e => setNewDocId(e.target.value)} />
+              </FormField>
+              <button className="btn" onClick={createFromForm}><Ic.plus size={13} />Create project</button>
+            </div>
+          </section>
+
           <section className="project-panel">
             <div className="panel-title"><Ic.doc size={14} />Metadata / provenance</div>
             <div className="project-form">
@@ -52,11 +103,11 @@ function ProjectSourceScreen({ docInfo, onPatchDoc, onBack, onExtract }) {
               <FormField label="domain"><input value={meta.domain || ""} onChange={e => patchMetadata({ domain: e.target.value })} /></FormField>
               <FormField label="genre"><input value={meta.genre || ""} onChange={e => patchMetadata({ genre: e.target.value })} /></FormField>
               <FormField label="source_format">
-                <select value={meta.source_format || "epub"} onChange={e => patchMetadata({ source_format: e.target.value })}>
-                  <option value="epub">epub</option>
+                <select value={meta.source_format || "txt"} onChange={e => patchMetadata({ source_format: e.target.value })}>
                   <option value="txt">txt</option>
+                  <option value="epub">epub</option>
                   <option value="html">html</option>
-                  <option value="pdf">pdf (logical extraction only)</option>
+                  <option value="pdf">pdf (not extractable in MVP)</option>
                 </select>
               </FormField>
               <FormField label="license"><input value={meta.license || ""} onChange={e => patchMetadata({ license: e.target.value })} /></FormField>
@@ -71,8 +122,8 @@ function ProjectSourceScreen({ docInfo, onPatchDoc, onBack, onExtract }) {
               </FormField>
             </div>
             <div className="readonly-strip">
-              <span className="lockfield"><span className="lf-k"><Ic.lock size={9} />raw_sha256</span><span className="lf-v">{prov.raw_sha256 || "created after extract"}</span></span>
-              <span className="lockfield"><span className="lf-k"><Ic.lock size={9} />pipeline</span><span className="lf-v">{prov.pipeline_version || "pending"}</span></span>
+              <span className="lockfield"><span className="lf-k"><Ic.lock size={9} />raw_sha256</span><span className="lf-v">{prov.raw_sha256 || meta.raw_sha256 || "created after extract"}</span></span>
+              <span className="lockfield"><span className="lf-k"><Ic.lock size={9} />pipeline</span><span className="lf-v">{prov.pipeline_version || meta.pipeline_version || "pending"}</span></span>
             </div>
           </section>
 
@@ -82,13 +133,14 @@ function ProjectSourceScreen({ docInfo, onPatchDoc, onBack, onExtract }) {
               <Ic.file size={22} />
               <div>
                 <div className="source-drop-title">TXT / EPUB source</div>
-                <div className="source-drop-sub">Prototype state only. Backend upload is wired later.</div>
+                <div className="source-drop-sub">Backend rejects PDF/OCR/layout extraction in this MVP.</div>
               </div>
-              <input value={fileName} onChange={e => setFileName(e.target.value)} />
+              <input type="file" accept=".txt,.epub" onChange={e => setFile(e.target.files?.[0] || null)} />
             </div>
             <div className="extract-actions">
-              <button className="btn" onClick={() => setFileName("")}>Clear</button>
-              <button className="btn primary" onClick={startExtract}><Ic.play size={13} />Extract</button>
+              <button className="btn" onClick={() => setFile(null)}>Clear</button>
+              <button className="btn" disabled={!file || !activeDocId} onClick={uploadSelected}><Ic.upload size={13} />Upload source</button>
+              <button className="btn primary" disabled={!activeDocId} onClick={startExtract}><Ic.play size={13} />Extract</button>
             </div>
             <div className="extract-note">
               <Ic.alert size={12} />
@@ -102,7 +154,7 @@ function ProjectSourceScreen({ docInfo, onPatchDoc, onBack, onExtract }) {
         <Modal title="Confirm re-extract" icon={Ic.alert} tone="bad" onClose={() => setConfirmOverwrite(false)}
           actions={<>
             <button className="btn" onClick={() => setConfirmOverwrite(false)}>Cancel</button>
-            <button className="btn primary" onClick={() => { setConfirmOverwrite(false); onExtract(fileName); }}>Overwrite draft</button>
+            <button className="btn primary" onClick={() => { setConfirmOverwrite(false); onExtract(true); }}>Overwrite draft</button>
           </>}>
           <p>Re-extracting can overwrite <span className="mono">document.json</span> and invalidate edited clean text, spans, and review state.</p>
           <p className="muted">Use this only when the source file or extraction settings changed.</p>

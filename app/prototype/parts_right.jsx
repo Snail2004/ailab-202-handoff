@@ -4,6 +4,8 @@ function StatusPill({ status }) {
   const map = {
     locked: ["Locked", "pill-lock"],
     proposed: ["Proposed", "pill-amber"],
+    candidate: ["Candidate", "pill-amber"],
+    verified: ["Verified", "pill-green"],
     human_verified: ["Verified", "pill-green"],
     reviewed: ["Reviewed", "pill-green"],
     draft: ["Draft", "pill-amber"],
@@ -79,17 +81,18 @@ function GlossaryTab({ terms, onDeleteTerm, onUpdateTerm }) {
                     <input value={arrayToCsv(t.forbidden_variants)} onChange={e => onUpdateTerm(t.term_id, { forbidden_variants: csvToArray(e.target.value) })} />
                   </FormField>
                   <FormField label="status">
-                    <select value={t.status || "proposed"} onChange={e => onUpdateTerm(t.term_id, { status: e.target.value })}>
-                      <option value="proposed">proposed</option>
-                      <option value="human_verified">human_verified</option>
+                    <select value={t.status || "candidate"} onChange={e => onUpdateTerm(t.term_id, { status: e.target.value })}>
+                      <option value="candidate">candidate</option>
+                      <option value="verified">verified</option>
                       <option value="locked">locked</option>
+                      <option value="human_verified">human_verified</option>
                     </select>
                   </FormField>
                 </div>
                 <div className="card-meta-row">
                   <span className="lockfield"><span className="lf-k"><Ic.lock size={9} />scope</span><span className="lf-v">{t.chapter_scope}</span></span>
                   <span className="lockfield"><span className="lf-k">conf</span><span className="lf-v">{Number(t.confidence || 0).toFixed(2)}</span></span>
-                  <span className="lockfield"><span className="lf-k">occ</span><span className="lf-v">{t.occurrences.length}</span></span>
+                  <span className="lockfield"><span className="lf-k">occ</span><span className="lf-v">{(t.occurrences || []).length}</span></span>
                   <button className="card-del tip tip-left" data-tip="Delete term" onClick={() => onDeleteTerm(t)}><Ic.trash size={12} /></button>
                 </div>
               </div>
@@ -131,7 +134,7 @@ function EntitiesTab({ entities, allEntities, block, onUpdateEntity, onUpdateDis
 
       {entities.map(e => {
         const open = expanded === e.entity_id;
-        const mentions = e.mentions.filter(m => m.block_id === block.block_id);
+        const mentions = (e.mentions || []).filter(m => m.block_id === block.block_id);
         return (
           <div key={e.entity_id} className={"card" + (open ? " open" : "")}>
             <button className="card-head" onClick={() => setExpanded(open ? null : e.entity_id)}>
@@ -226,8 +229,9 @@ function SummaryTab({ summary, entities, onUpdateSummary }) {
 }
 
 /* ---------- REFERENCE ---------- */
-function ReferenceTab({ refs, block, onUpdateReference, onSaveDraft, onMarkReviewed, onLockReference }) {
+function ReferenceTab({ refs, block, onUpdateReference, onCreateReference, onSaveDraft, onMarkReviewed, onLockReference }) {
   const blockRef = refs.find(r => r.block_id === block.block_id);
+  const [newReference, setNewReference] = React.useState({ reference_vi: "", source: "human", ai_model: "" });
   return (
     <div className="tab-body">
       <div className="ref-explain">
@@ -235,7 +239,31 @@ function ReferenceTab({ refs, block, onUpdateReference, onSaveDraft, onMarkRevie
         <span><b>Draft</b> stays in working state. Only <b>Reviewed</b> or <b>Locked</b> references are freeze-eligible.</span>
       </div>
       {!blockRef ? (
-        <Empty icon={Ic.book} text="No reference translation for this block." sub="This block is not in the reference subset stratum." />
+        <div className="ref-card status-draft">
+          <div className="ref-card-head">
+            <span className="ref-stratum mono">new draft</span>
+            <span className="card-spacer" />
+            <StatusPill status="draft" />
+          </div>
+          <FormField label="reference_vi">
+            <textarea className="ref-textarea" rows={6} value={newReference.reference_vi}
+              onChange={e => setNewReference(r => ({ ...r, reference_vi: e.target.value }))} />
+          </FormField>
+          <div className="form-grid">
+            <FormField label="source">
+              <select value={newReference.source} onChange={e => setNewReference(r => ({ ...r, source: e.target.value }))}>
+                <option value="human">human</option>
+                <option value="ai_assisted_verified">ai_assisted_verified</option>
+              </select>
+            </FormField>
+            <FormField label="ai_model">
+              <input value={newReference.ai_model} onChange={e => setNewReference(r => ({ ...r, ai_model: e.target.value }))} />
+            </FormField>
+          </div>
+          <div className="ref-actions">
+            <button className="btn sm primary" onClick={() => onCreateReference(block.block_id, newReference)}><Ic.book size={12} />Save draft</button>
+          </div>
+        </div>
       ) : (
         <div className={"ref-card status-" + blockRef.status}>
           <div className="ref-card-head">
@@ -381,7 +409,7 @@ function RightPanel({ active, onSetActive, counts, ctx }) {
                   {t.id === "glossary" && <GlossaryTab terms={ctx.terms} onDeleteTerm={ctx.onDeleteTerm} onUpdateTerm={ctx.onUpdateTerm} />}
                   {t.id === "entities" && <EntitiesTab entities={ctx.entities} allEntities={ctx.allEntities} block={ctx.block} onUpdateEntity={ctx.onUpdateEntity} onUpdateDiscourse={ctx.onUpdateDiscourse} />}
                   {t.id === "summary" && <SummaryTab summary={ctx.summary} entities={ctx.allEntities} onUpdateSummary={ctx.onUpdateSummary} />}
-                  {t.id === "reference" && <ReferenceTab refs={ctx.references} block={ctx.block} onUpdateReference={ctx.onUpdateReference} onSaveDraft={ctx.onSaveDraft} onMarkReviewed={ctx.onMarkReviewedReference} onLockReference={ctx.onLockReference} />}
+                  {t.id === "reference" && <ReferenceTab refs={ctx.references} block={ctx.block} onUpdateReference={ctx.onUpdateReference} onCreateReference={ctx.onCreateReference} onSaveDraft={ctx.onSaveDraft} onMarkReviewed={ctx.onMarkReviewedReference} onLockReference={ctx.onLockReference} />}
                   {t.id === "validate" && <ValidateTab errors={ctx.errors} onJump={ctx.onJump} />}
                   {t.id === "progress" && <ProgressTab stats={ctx.stats} freezeReasons={ctx.freezeReasons} />}
                 </div>

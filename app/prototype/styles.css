@@ -346,8 +346,8 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 .clean-hint .hint-keys { margin-left: auto; display: inline-flex; align-items: center; gap: 3px; }
 .stale-warn { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: var(--red); background: var(--red-weak); padding: 2px 8px; border-radius: 999px; }
 
-.sel-pop { position: absolute; z-index: 30; display: flex; align-items: center; background: #1f2429; border-radius: 7px; box-shadow: var(--shadow-pop); padding: 3px; animation: pop-in .1s ease; }
-.sel-pop-btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border: 0; background: none; color: #e8eaec; font-size: 12px; font-weight: 500; border-radius: 5px; }
+.sel-pop { position: absolute; z-index: 30; display: flex; align-items: center; background: #1f2429; border-radius: 7px; box-shadow: var(--shadow-pop); padding: 3px; animation: pop-in .1s ease; white-space: nowrap; }
+.sel-pop-btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border: 0; background: none; color: #e8eaec; font-size: 12px; font-weight: 500; line-height: 1; border-radius: 5px; white-space: nowrap; flex: 0 0 auto; }
 .sel-pop-btn:hover { background: rgba(255,255,255,.1); }
 .sel-pop-div { width: 1px; height: 16px; background: rgba(255,255,255,.16); }
 

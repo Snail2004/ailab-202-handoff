@@ -149,8 +149,14 @@ function CenterEditor({
     const off = selectionOffsets(c);
     if (!off) { setSel(null); return; }
     const r = window.getSelection().getRangeAt(0).getBoundingClientRect();
-    const wrap = c.closest(".ed-scroll").getBoundingClientRect();
-    setSel({ ...off, rect: { top: r.top - wrap.top - 44, left: Math.max(8, r.left - wrap.left + r.width / 2 - 92) } });
+    const host = c.getBoundingClientRect();
+    const popoverWidth = 258;
+    const top = r.bottom - host.top + 8;
+    const left = Math.min(
+      Math.max(8, r.left - host.left + r.width / 2 - popoverWidth / 2),
+      Math.max(8, c.clientWidth - popoverWidth - 8)
+    );
+    setSel({ ...off, rect: { top, left } });
   }
 
   const staleCount = spans.filter(s => s.stale).length;

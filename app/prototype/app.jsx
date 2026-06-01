@@ -1,12 +1,80 @@
-/* ===== APP: top bar, state, interactions ===== */
+/* ===== APP: real backend wiring, state adapter, interactions ===== */
 const { useState, useEffect, useMemo, useRef, useCallback } = React;
+
+const API = window.AILAB_API;
+const STORAGE_DOC = "ailab.doc_id";
+const STORAGE_USER = "ailab.user";
+const DEFAULT_USER = "U2 · Mai";
+const EDITABLE_META = new Set(["title", "author", "domain", "genre", "source_format", "license", "source_url", "contamination_risk"]);
 
 function cloneData(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function currentUser() {
+  return localStorage.getItem(STORAGE_USER) || DEFAULT_USER;
+}
+
+function errorMessage(err) {
+  const first = err?.errors?.[0] || err?.payload?.errors?.[0];
+  return first?.message || err?.message || "Request failed.";
+}
+
+function normalizeErrors(report) {
+  if (!report) return [];
+  const errors = (report.errors || []).map(e => ({ severity: "error", ...e }));
+  const warnings = (report.warnings || []).map(w => ({ severity: "warning", ...w }));
+  return [...errors, ...warnings];
+}
+
+function docInfoFromDocument(document) {
+  const metadata = { ...(document?.metadata || {}) };
+  const provenance = {
+    raw_sha256: metadata.raw_sha256 || "",
+    extraction_tool: metadata.extraction_tool || "",
+    pipeline_version: metadata.pipeline_version || "",
+    retrieved_at: metadata.retrieved_at || "",
+  };
+  return {
+    doc_id: document?.doc_id || "",
+    schema_version: document?.schema_version || "",
+    metadata,
+    provenance,
+  };
+}
+
+function mergeReferences(dataset) {
+  const canonical = (dataset.references || []).map(row => ({ ...row, canonical: true }));
+  const canonicalIds = new Set(canonical.map(row => row.reference_id));
+  const draftRows = Object.values(dataset.reference_drafts?.references || {})
+    .filter(row => (row.status || "draft") === "draft")
+    .map(row => ({
+      ...row,
+      status: "draft",
+      canonical: false,
+      reference_vi: row.reference_vi || row.draft_vi || "",
+    }))
+    .filter(row => !canonicalIds.has(row.reference_id));
+  return [...canonical, ...draftRows];
+}
+
+function adaptDataset(dataset) {
+  return {
+    docInfo: docInfoFromDocument(dataset.document),
+    chapters: dataset.chapters || [],
+    blocks: dataset.blocks || [],
+    glossary: dataset.glossary || [],
+    entities: dataset.entities || [],
+    summaries: dataset.summaries || [],
+    references: mergeReferences(dataset),
+    review: dataset.review_state || { blocks: {}, references: {}, summaries: {} },
+    jobs: dataset.jobs || [],
+  };
+}
+
 /* build annotation spans for a block from glossary + entities, with stale detection */
 function buildSpans(block, glossary, entities) {
+  if (!block) return [];
   const spans = [];
   glossary.forEach(t => (t.occurrences || []).forEach(o => {
     if (o.block_id !== block.block_id) return;
@@ -17,7 +85,7 @@ function buildSpans(block, glossary, entities) {
       kind: "glossary",
       label: `${t.source_term} -> ${t.expected_target || "target needed"}`,
       id: t.term_id,
-      stale: cur.toLowerCase() !== String(t.source_term || "").toLowerCase(),
+      stale: cur !== String(t.source_term || ""),
     });
   }));
   entities.forEach(e => (e.mentions || []).forEach(m => {
@@ -74,17 +142,17 @@ function TopBar({ docId, dirty, lastSaved, onValidate, onExport, onFreeze, freez
         <span className="tb-doc tip" data-tip="Active document · one local project folder per doc_id">
           <Ic.doc size={13} className="faint" /><span className="mono">{docId}</span>
         </span>
-        <span className="wc-badge tip" data-tip="Autosaved working state: review flags, drafts, and UI edits. Canonical JSONL files stay freeze-clean.">
+        <span className="wc-badge tip" data-tip="Autosaved working state and canonical dataset files via backend API.">
           <span className="wc-dot" />working copy
         </span>
       </div>
 
       <div className="tb-right">
-        <span className="autosave tip" data-tip="Autosaves working state; Freeze creates a validated versioned snapshot.">
+        <span className="autosave tip" data-tip="Writes go through the Flask backend. Freeze creates a validated versioned snapshot.">
           {dirty ? <><span className="as-spin" />saving...</> : <><Ic.check size={12} className="as-ok" />saved {lastSaved}</>}
         </span>
         <span className="tb-sep" />
-        <span className="user-chip tip" data-tip="Current user · reviewer role"><span className="ua">M</span>U2 · Mai</span>
+        <span className="user-chip tip" data-tip="Current local user"><span className="ua">M</span>{currentUser()}</span>
         <span className="tb-sep" />
         <button className="btn" onClick={onValidate}><Ic.checkCircle size={13} />Validate</button>
         <button className="btn" onClick={onExport}><Ic.upload size={13} />Export</button>
@@ -98,17 +166,37 @@ function TopBar({ docId, dirty, lastSaved, onValidate, onExport, onFreeze, freez
   );
 }
 
+function StartupState({ title, message, action, onAction, secondary }) {
+  return (
+    <div className="project-screen">
+      <div className="project-wrap" style={{ maxWidth: 760 }}>
+        <div className="project-headline">
+          <div>
+            <div className="project-kicker">AILAB Dataset Tool</div>
+            <h1>{title}</h1>
+            <p>{message}</p>
+            {secondary && <p className="muted">{secondary}</p>}
+          </div>
+          {action && <button className="btn primary" onClick={onAction}>{action}</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [view, setView] = useState(() => window.location.hash === "#project" ? "project" : "workspace");
-  const [docInfo, setDocInfo] = useState(() => cloneData(DATA.DOC));
-  const [blocks, setBlocks] = useState(() => cloneData(DATA.BLOCKS));
-  const [glossary, setGlossary] = useState(() => cloneData(DATA.GLOSSARY));
-  const [entities, setEntities] = useState(() => cloneData(DATA.ENTITIES));
-  const [summaries, setSummaries] = useState(() => cloneData(DATA.SUMMARIES));
-  const [references, setReferences] = useState(() => cloneData(DATA.REFERENCES));
-  const [review, setReview] = useState(() => cloneData(DATA.REVIEW));
-  const [errors, setErrors] = useState(() => cloneData(DATA.VALIDATION));
-  const [selectedId, setSelectedId] = useState("b0004");
+  const [projects, setProjects] = useState([]);
+  const [docInfo, setDocInfo] = useState(null);
+  const [chapters, setChapters] = useState([]);
+  const [blocks, setBlocks] = useState([]);
+  const [glossary, setGlossary] = useState([]);
+  const [entities, setEntities] = useState([]);
+  const [summaries, setSummaries] = useState([]);
+  const [references, setReferences] = useState([]);
+  const [review, setReview] = useState({ blocks: {}, references: {}, summaries: {} });
+  const [errors, setErrors] = useState([]);
+  const [selectedId, setSelectedId] = useState(null);
   const [filters, setFilters] = useState(new Set());
   const [rightActive, setRightActive] = useState("glossary");
   const [editing, setEditing] = useState(false);
@@ -116,15 +204,81 @@ function App() {
   const [modal, setModal] = useState(null);
   const [dirty, setDirty] = useState(false);
   const [lastSaved, setLastSaved] = useState("just now");
+  const [loading, setLoading] = useState(true);
+  const [bootError, setBootError] = useState(null);
+  const [activeDocId, setActiveDocId] = useState(localStorage.getItem(STORAGE_DOC) || "");
   const savedAt = useRef(Date.now());
+  const saveTimers = useRef({});
 
-  const block = blocks.find(b => b.block_id === selectedId) || blocks[0];
+  const refreshProjects = useCallback(async () => {
+    const list = await API.listProjects();
+    setProjects(list);
+    return list;
+  }, []);
 
-  /* ---- autosave simulation ---- */
-  const touch = useCallback(() => {
+  const loadDataset = useCallback(async (docId, opts = {}) => {
+    if (!docId) return null;
+    if (!opts.silent) setLoading(true);
+    const dataset = await API.getDataset(docId);
+    const adapted = adaptDataset(dataset);
+    setDocInfo(adapted.docInfo);
+    setChapters(adapted.chapters);
+    setBlocks(adapted.blocks);
+    setGlossary(adapted.glossary);
+    setEntities(adapted.entities);
+    setSummaries(adapted.summaries);
+    setReferences(adapted.references);
+    setReview(adapted.review);
+    setActiveDocId(adapted.docInfo.doc_id);
+    localStorage.setItem(STORAGE_DOC, adapted.docInfo.doc_id);
+    setSelectedId(prev => adapted.blocks.some(b => b.block_id === prev) ? prev : adapted.blocks[0]?.block_id || null);
+    setBootError(null);
+    setLoading(false);
+    return adapted;
+  }, []);
+
+  async function boot() {
+    setLoading(true);
+    setBootError(null);
+    try {
+      const list = await refreshProjects();
+      const remembered = localStorage.getItem(STORAGE_DOC);
+      const chosen = list.find(p => p.doc_id === remembered && p.status === "available")
+        || list.find(p => p.status === "available")
+        || list[0];
+      if (!chosen) {
+        setDocInfo({ doc_id: "", metadata: {}, provenance: {} });
+        setView("project");
+        setLoading(false);
+        return;
+      }
+      setActiveDocId(chosen.doc_id);
+      if (chosen.status === "available") {
+        await loadDataset(chosen.doc_id);
+      } else {
+        setDocInfo({ doc_id: chosen.doc_id, metadata: {}, provenance: {} });
+        setView("project");
+        setLoading(false);
+      }
+    } catch (err) {
+      setBootError(errorMessage(err));
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { boot(); }, []);
+
+  const block = blocks.find(b => b.block_id === selectedId) || blocks[0] || null;
+
+  const touchStart = useCallback(() => {
     setDirty(true);
     savedAt.current = Date.now();
-    setTimeout(() => setDirty(false), 750);
+    setLastSaved("just now");
+  }, []);
+
+  const touchDone = useCallback(() => {
+    savedAt.current = Date.now();
+    setDirty(false);
     setLastSaved("just now");
   }, []);
 
@@ -143,7 +297,37 @@ function App() {
   }
   const dismiss = id => setToasts(t => t.filter(x => x.id !== id));
 
-  /* ---- derived: annotation set, spans, counts, stats ---- */
+  async function mutate(action, { refresh = true, success, fail } = {}) {
+    if (!activeDocId) return null;
+    touchStart();
+    try {
+      const result = await action();
+      if (refresh) await loadDataset(activeDocId, { silent: true });
+      touchDone();
+      if (success) toast(success, "good");
+      return result;
+    } catch (err) {
+      touchDone();
+      toast(fail || "Action failed", "bad", errorMessage(err));
+      return null;
+    }
+  }
+
+  function queueSave(key, action) {
+    touchStart();
+    clearTimeout(saveTimers.current[key]);
+    saveTimers.current[key] = setTimeout(async () => {
+      try {
+        await action();
+        await loadDataset(activeDocId, { silent: true });
+        touchDone();
+      } catch (err) {
+        touchDone();
+        toast("Save failed", "bad", errorMessage(err));
+      }
+    }, 650);
+  }
+
   const annoSet = useMemo(() => {
     const s = new Set();
     glossary.forEach(t => (t.occurrences || []).forEach(o => s.add(o.block_id)));
@@ -155,74 +339,75 @@ function App() {
   const allSpans = useMemo(() => blocks.flatMap(b => buildSpans(b, glossary, entities).map(s => ({ ...s, block_id: b.block_id }))), [blocks, glossary, entities]);
   const staleCount = allSpans.filter(s => s.stale).length;
 
-  const blockTerms = useMemo(() => glossary.filter(t => (t.occurrences || []).some(o => o.block_id === block.block_id)), [glossary, block]);
-  const blockEntities = useMemo(() => entities.filter(e => (e.mentions || []).some(m => m.block_id === block.block_id)
-    || (block.discourse && [block.discourse.speaker_entity_id, block.discourse.addressee_entity_id].includes(e.entity_id))), [entities, block]);
-  const summary = summaries.find(s => s.chapter_id === block.chapter_id) || summaries[0];
+  const blockTerms = useMemo(() => block ? glossary.filter(t => (t.occurrences || []).some(o => o.block_id === block.block_id)) : [], [glossary, block]);
+  const blockEntities = useMemo(() => block ? entities.filter(e => (e.mentions || []).some(m => m.block_id === block.block_id)
+    || (block.discourse && [block.discourse.speaker_entity_id, block.discourse.addressee_entity_id].includes(e.entity_id))) : [], [entities, block]);
+  const summary = useMemo(() => block ? (summaries.find(s => s.chapter_id === block.chapter_id) || { doc_id: docInfo?.doc_id, chapter_id: block.chapter_id, summary_source: "", source: "" }) : null, [summaries, block, docInfo]);
 
   const filterCounts = useMemo(() => ({
-    unreviewed: blocks.filter(b => !review.blocks[b.block_id]?.reviewed).length,
+    unreviewed: blocks.filter(b => !review.blocks?.[b.block_id]?.reviewed).length,
     dialogue: blocks.filter(b => b.block_type === "dialogue").length,
-    flag: blocks.filter(b => b.quality_flags.some(f => f !== "ok")).length,
+    flag: blocks.filter(b => (b.quality_flags || []).some(f => f !== "ok")).length,
     opening: blocks.filter(b => b.is_chapter_opening).length,
     annotation: blocks.filter(b => annoSet.has(b.block_id)).length,
   }), [blocks, review, annoSet]);
 
   const visibleBlocks = useMemo(() => blocks.filter(b => {
-    if (filters.has("unreviewed") && review.blocks[b.block_id]?.reviewed) return false;
+    if (filters.has("unreviewed") && review.blocks?.[b.block_id]?.reviewed) return false;
     if (filters.has("dialogue") && b.block_type !== "dialogue") return false;
-    if (filters.has("flag") && !b.quality_flags.some(f => f !== "ok")) return false;
+    if (filters.has("flag") && !(b.quality_flags || []).some(f => f !== "ok")) return false;
     if (filters.has("opening") && !b.is_chapter_opening) return false;
     if (filters.has("annotation") && !annoSet.has(b.block_id)) return false;
     return true;
   }), [blocks, filters, review, annoSet]);
 
   const stats = useMemo(() => {
-    const reviewed = blocks.filter(b => review.blocks[b.block_id]?.reviewed).length;
+    const reviewed = blocks.filter(b => review.blocks?.[b.block_id]?.reviewed).length;
     const hardErrors = errors.filter(e => e.severity === "error").length;
     return {
       reviewed,
       totalBlocks: blocks.length,
       glossary: glossary.length,
-      glossaryDone: glossary.filter(t => t.status !== "proposed" && t.expected_target).length,
+      glossaryDone: glossary.filter(t => t.status !== "candidate" && t.expected_target).length,
       entities: entities.length,
       entitiesDone: entities.filter(e => e.canonical_target).length,
       summaries: summaries.filter(s => s.summary_source && s.source).length,
-      totalChapters: DATA.CHAPTERS.length,
+      totalChapters: chapters.length,
       refs: references.length,
       refReviewed: references.filter(r => ["reviewed", "locked"].includes(r.status)).length,
       valTotal: Math.max(errors.length, 1),
       valClean: Math.max(errors.length, 1) - hardErrors,
     };
-  }, [blocks, glossary, entities, summaries, references, review, errors]);
+  }, [blocks, glossary, entities, summaries, references, review, errors, chapters]);
 
-  /* ---- freeze gating ---- */
   const errorCount = errors.filter(e => e.severity === "error").length;
-  const unreviewed = blocks.filter(b => !review.blocks[b.block_id]?.reviewed).length;
+  const unreviewed = blocks.filter(b => !review.blocks?.[b.block_id]?.reviewed).length;
   const draftRefs = references.filter(r => r.status === "draft").length;
-  const missingSummaries = DATA.CHAPTERS.filter(ch => {
+  const needsRetag = Object.values(review.blocks || {}).filter(v => v?.needs_retag).length;
+  const missingSummaries = chapters.filter(ch => {
     const s = summaries.find(x => x.chapter_id === ch.chapter_id);
     return !s || !s.summary_source || !s.source;
   }).length;
   const requiredMissing = [];
-  ["title", "author", "domain", "genre", "source_format", "license", "source_url", "contamination_risk"].forEach(k => {
-    if (!docInfo.metadata?.[k]) requiredMissing.push("metadata." + k);
+  ["title", "author", "domain", "genre", "source_format", "license", "contamination_risk"].forEach(k => {
+    if (!docInfo?.metadata?.[k]) requiredMissing.push("metadata." + k);
   });
-  ["raw_sha256", "extraction_tool", "pipeline_version"].forEach(k => {
-    if (!docInfo.provenance?.[k]) requiredMissing.push("provenance." + k);
-  });
+  if (docInfo?.metadata?.extraction_tool !== "manual-synthetic" && !docInfo?.metadata?.raw_sha256) {
+    requiredMissing.push("metadata.raw_sha256");
+  }
+  if (!docInfo?.metadata?.extraction_tool) requiredMissing.push("metadata.extraction_tool");
+  if (!docInfo?.metadata?.pipeline_version) requiredMissing.push("metadata.pipeline_version");
 
   const freezeReasons = [];
   if (errorCount > 0) freezeReasons.push(`${errorCount} validation error${errorCount > 1 ? "s" : ""}`);
   if (unreviewed > 0) freezeReasons.push(`${unreviewed} block${unreviewed > 1 ? "s" : ""} unreviewed`);
   if (draftRefs > 0) freezeReasons.push(`${draftRefs} draft reference${draftRefs > 1 ? "s" : ""}`);
-  if (staleCount > 0) freezeReasons.push(`${staleCount} stale span${staleCount > 1 ? "s" : ""}`);
+  if (staleCount + needsRetag > 0) freezeReasons.push(`${staleCount + needsRetag} stale span${staleCount + needsRetag > 1 ? "s" : ""}`);
   if (missingSummaries > 0) freezeReasons.push(`${missingSummaries} chapter summar${missingSummaries > 1 ? "ies" : "y"} missing`);
   if (requiredMissing.length > 0) freezeReasons.push(`${requiredMissing.length} required source/provenance field${requiredMissing.length > 1 ? "s" : ""} missing`);
   const freezeReady = freezeReasons.length === 0;
 
-  /* ---- right-panel badges ---- */
-  const refForBlock = references.find(r => r.block_id === block.block_id);
+  const refForBlock = block ? references.find(r => r.block_id === block.block_id) : null;
   const rpCounts = {
     glossary: { text: blockTerms.length || null },
     entities: { text: blockEntities.length || null },
@@ -232,139 +417,275 @@ function App() {
     progress: { text: `${stats.reviewed}/${stats.totalBlocks}` },
   };
 
-  /* ---- actions ---- */
   function selectBlock(id) { setSelectedId(id); setEditing(false); }
   function toggleFilter(id) { setFilters(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; }); }
-  function updateBlock(patch) { setBlocks(bs => bs.map(b => b.block_id === selectedId ? { ...b, ...patch } : b)); touch(); }
+
+  async function selectProject(docId) {
+    const chosen = projects.find(p => p.doc_id === docId);
+    setActiveDocId(docId);
+    localStorage.setItem(STORAGE_DOC, docId);
+    if (chosen?.status === "available") {
+      await loadDataset(docId);
+      setView("workspace");
+    } else {
+      setDocInfo({ doc_id: docId, metadata: {}, provenance: {} });
+      setChapters([]);
+      setBlocks([]);
+      setGlossary([]);
+      setEntities([]);
+      setSummaries([]);
+      setReferences([]);
+      setReview({ blocks: {}, references: {}, summaries: {} });
+      setErrors([]);
+      setSelectedId(null);
+      setView("project");
+    }
+  }
 
   function patchDoc(patch) {
-    setDocInfo(d => ({ ...d, ...patch, metadata: patch.metadata || d.metadata, provenance: patch.provenance || d.provenance }));
-    touch();
-  }
-  function runExtract(fileName) {
-    setDocInfo(d => ({
-      ...d,
-      metadata: { ...d.metadata, source_format: d.metadata.source_format || (fileName.endsWith(".txt") ? "txt" : "epub") },
-      provenance: { ...d.provenance, extraction_tool: "ailab-extract", pipeline_version: "1.4.0", retrieved_at: "2026-06-01" },
-    }));
-    touch();
-    toast("Extraction job simulated", "info", "Backend Flask will run the real Python extractor later.");
+    if (patch.metadata) {
+      const localMetadata = { ...(docInfo?.metadata || {}), ...patch.metadata };
+      setDocInfo(d => ({ ...(d || {}), metadata: localMetadata, provenance: d?.provenance || {} }));
+      const apiPatch = {};
+      Object.entries(patch.metadata).forEach(([k, v]) => {
+        if (EDITABLE_META.has(k)) apiPatch[k] = v;
+      });
+      if (Object.keys(apiPatch).length && activeDocId && blocks.length) {
+        queueSave("metadata", () => API.patchMetadata(activeDocId, { ...apiPatch, user: currentUser() }));
+      }
+    }
   }
 
-  function changeType(t) { updateBlock({ block_type: t }); toast(`block_type -> ${t}`, "info"); }
-  function toggleOpening() { updateBlock({ is_chapter_opening: !block.is_chapter_opening }); }
+  async function createProject(docId, metadata) {
+    try {
+      const result = await API.createProject({ doc_id: docId, metadata });
+      await refreshProjects();
+      setDocInfo({ doc_id: result.doc_id, metadata: metadata || {}, provenance: {} });
+      setChapters([]);
+      setBlocks([]);
+      setGlossary([]);
+      setEntities([]);
+      setSummaries([]);
+      setReferences([]);
+      setReview({ blocks: {}, references: {}, summaries: {} });
+      setErrors([]);
+      setSelectedId(null);
+      setActiveDocId(result.doc_id);
+      localStorage.setItem(STORAGE_DOC, result.doc_id);
+      toast("Project created", "good", result.doc_id);
+      return result;
+    } catch (err) {
+      toast("Create project failed", "bad", errorMessage(err));
+      return null;
+    }
+  }
+
+  async function uploadSource(file, overwrite) {
+    if (!activeDocId || !file) return null;
+    try {
+      const result = await API.uploadSource(activeDocId, file, overwrite);
+      await refreshProjects();
+      toast("Source uploaded", "good", result.filename);
+      return result;
+    } catch (err) {
+      toast("Upload failed", "bad", errorMessage(err));
+      return null;
+    }
+  }
+
+  async function runExtract(overwrite) {
+    if (!activeDocId) return null;
+    try {
+      const job = await API.extract(activeDocId, { overwrite: !!overwrite, user: currentUser() });
+      await refreshProjects();
+      await loadDataset(activeDocId, { silent: true });
+      setView("workspace");
+      toast("Extraction complete", "good", `${job.document?.blocks || 0} blocks · ${job.document?.chapters || 0} chapters`);
+      return job;
+    } catch (err) {
+      toast("Extraction failed", "bad", errorMessage(err));
+      return null;
+    }
+  }
+
+  function changeType(t) {
+    if (!block) return;
+    setBlocks(bs => bs.map(b => b.block_id === block.block_id ? { ...b, block_type: t } : b));
+    mutate(() => API.patchBlock(activeDocId, block.block_id, { block_type: t, user: currentUser() }), { success: `block_type -> ${t}` });
+  }
+  function toggleOpening() {
+    if (!block) return;
+    const next = !block.is_chapter_opening;
+    setBlocks(bs => bs.map(b => b.block_id === block.block_id ? { ...b, is_chapter_opening: next } : b));
+    mutate(() => API.patchBlock(activeDocId, block.block_id, { is_chapter_opening: next, user: currentUser() }));
+  }
   function toggleFlag(f) {
+    if (!block) return;
     let flags;
+    const current = block.quality_flags || ["ok"];
     if (f === "ok") flags = ["ok"];
     else {
-      flags = block.quality_flags.includes(f) ? block.quality_flags.filter(x => x !== f) : [...block.quality_flags.filter(x => x !== "ok"), f];
+      flags = current.includes(f) ? current.filter(x => x !== f) : [...current.filter(x => x !== "ok"), f];
       if (!flags.length) flags = ["ok"];
     }
-    updateBlock({ quality_flags: flags });
+    setBlocks(bs => bs.map(b => b.block_id === block.block_id ? { ...b, quality_flags: flags } : b));
+    mutate(() => API.patchBlock(activeDocId, block.block_id, { quality_flags: flags, user: currentUser() }));
   }
   function markReviewed() {
-    setReview(r => ({ blocks: { ...r.blocks, [selectedId]: { reviewed: !r.blocks[selectedId]?.reviewed, reviewed_by: "U2 · Mai" } } }));
-    touch();
-    if (!review.blocks[selectedId]?.reviewed) toast(`${selectedId} marked reviewed`, "good");
+    if (!block) return;
+    const next = !review.blocks?.[block.block_id]?.reviewed;
+    mutate(() => API.patchReview(activeDocId, block.block_id, { reviewed: next, reviewed_by: currentUser(), user: currentUser() }), {
+      success: next ? `${block.block_id} marked reviewed` : `${block.block_id} marked unreviewed`,
+    });
   }
 
-  function commitClean(text) {
-    updateBlock({ clean_text: text });
+  async function commitClean(text) {
+    if (!block) return;
+    setBlocks(bs => bs.map(b => b.block_id === block.block_id ? { ...b, clean_text: text } : b));
     setEditing(false);
-    const newSpans = buildSpans({ ...block, clean_text: text }, glossary, entities);
-    const broke = newSpans.filter(s => s.stale).length;
+    const result = await mutate(() => API.patchBlock(activeDocId, block.block_id, { clean_text: text, user: currentUser() }), { refresh: true });
+    const broke = result?.stale_spans?.length || 0;
     if (broke > 0) toast(`Clean text saved · ${broke} annotation span${broke > 1 ? "s" : ""} no longer match`, "bad", "Re-tag from the right panel to clear the warning.");
     else toast("Clean text saved", "good");
   }
 
-  function addGlossary(sel) {
+  async function addGlossary(sel) {
+    if (!block || !sel) return;
     setRightActive("glossary");
-    const term_id = "g_" + sel.text.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 16) + "_" + Math.random().toString(36).slice(2, 5);
-    setGlossary(g => [{ term_id, doc_id: docInfo.doc_id, source_term: sel.text.trim(),
-      expected_target: "", allowed_variants: [], forbidden_variants: [], chapter_scope: "global",
-      status: "proposed", confidence: 0.5, occurrences: [{ block_id: selectedId, span: [sel.start, sel.end] }] }, ...g]);
-    touch();
-    toast(`Added glossary occurrence "${sel.text.trim()}"`, "good", "Set expected_target in the Glossary tab.");
+    const result = await mutate(() => API.addGlossary(activeDocId, {
+      block_id: block.block_id,
+      start: sel.start,
+      end: sel.end,
+      source_term: sel.text.trim(),
+      user: currentUser(),
+    }), { success: `Added glossary occurrence "${sel.text.trim()}"`, fail: "Add glossary failed" });
+    if (result) toast("Set expected_target in the Glossary tab.", "info");
   }
-  function addEntity(sel) {
+  async function addEntity(sel) {
+    if (!block || !sel) return;
     setRightActive("entities");
-    const existing = entities.find(e => e.canonical_source.toLowerCase().includes(sel.text.trim().toLowerCase()) || sel.text.trim().toLowerCase().includes(e.canonical_source.toLowerCase()));
-    if (existing) {
-      setEntities(es => es.map(e => e.entity_id === existing.entity_id
-        ? { ...e, mentions: [...e.mentions, { block_id: selectedId, surface: sel.text.trim(), span: [sel.start, sel.end] }] } : e));
-      toast(`Linked mention to ${existing.canonical_source}`, "good");
-    } else {
-      const entity_id = "e_" + sel.text.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 16) + "_" + Math.random().toString(36).slice(2, 4);
-      setEntities(es => [{ entity_id, doc_id: docInfo.doc_id, canonical_source: sel.text.trim(), canonical_target: "",
-        entity_type: "person", gender: "", aliases_source: [], aliases_target: [], pronoun_policy: "",
-        mentions: [{ block_id: selectedId, surface: sel.text.trim(), span: [sel.start, sel.end] }] }, ...es]);
-      toast(`Created entity "${sel.text.trim()}"`, "good", "Set canonical_target and pronoun policy.");
-    }
-    touch();
+    const result = await mutate(() => API.addEntity(activeDocId, {
+      block_id: block.block_id,
+      start: sel.start,
+      end: sel.end,
+      surface: sel.text.trim(),
+      user: currentUser(),
+    }), { success: `Added entity mention "${sel.text.trim()}"`, fail: "Add entity failed" });
+    if (result) toast("Set canonical_target and pronoun policy.", "info");
   }
 
   function updateTerm(termId, patch) {
     setGlossary(gs => gs.map(t => t.term_id === termId ? { ...t, ...patch } : t));
-    touch();
+    queueSave(`term:${termId}:${Object.keys(patch).join(",")}`, () => API.patchGlossary(activeDocId, termId, { ...patch, user: currentUser() }));
   }
   function updateEntity(entityId, patch) {
     setEntities(es => es.map(e => e.entity_id === entityId ? { ...e, ...patch } : e));
-    touch();
+    queueSave(`entity:${entityId}:${Object.keys(patch).join(",")}`, () => API.patchEntity(activeDocId, entityId, { ...patch, user: currentUser() }));
   }
   function updateSummary(chapterId, patch) {
-    setSummaries(ss => ss.map(s => s.chapter_id === chapterId ? { ...s, ...patch } : s));
-    touch();
+    if (!chapterId) return;
+    setSummaries(ss => {
+      const exists = ss.some(s => s.chapter_id === chapterId);
+      if (exists) return ss.map(s => s.chapter_id === chapterId ? { ...s, ...patch } : s);
+      return [...ss, { doc_id: docInfo?.doc_id, chapter_id: chapterId, ...patch }];
+    });
+    queueSave(`summary:${chapterId}:${Object.keys(patch).join(",")}`, () => API.patchSummary(activeDocId, chapterId, { ...patch, user: currentUser() }));
   }
   function updateReference(referenceId, patch) {
-    setReferences(rs => rs.map(r => r.reference_id === referenceId ? { ...r, ...patch } : r));
-    touch();
+    setReferences(rs => rs.map(r => r.reference_id === referenceId ? { ...r, ...patch, canonical: false } : r));
   }
   function updateDiscourse(patch) {
-    updateBlock({ discourse: { ...(block.discourse || {}), ...patch } });
-    toast("Discourse saved to working state", "good");
+    if (!block) return;
+    const discourse = { ...(block.discourse || {}), ...patch };
+    setBlocks(bs => bs.map(b => b.block_id === block.block_id ? { ...b, discourse } : b));
+    mutate(() => API.patchBlock(activeDocId, block.block_id, { discourse, user: currentUser() }), { success: "Discourse saved" });
   }
   function saveDraft(referenceId) {
-    updateReference(referenceId, { status: "draft", canonical: false });
-    toast("Reference draft saved", "info");
+    const r = references.find(x => x.reference_id === referenceId);
+    if (!r) return;
+    mutate(() => API.saveReferenceDraft(activeDocId, {
+      reference_id: r.reference_id,
+      block_id: r.block_id,
+      draft_vi: r.reference_vi || r.draft_vi || "",
+      reference_vi: r.reference_vi || "",
+      source: r.source || "",
+      translated_by: r.translated_by || currentUser(),
+      ai_model: r.ai_model || "",
+      prompt_id: r.prompt_id || "",
+      notes: r.notes || "",
+      user: currentUser(),
+    }), { success: "Reference draft saved" });
+  }
+  function createReferenceDraft(blockId, payload) {
+    mutate(() => API.saveReferenceDraft(activeDocId, {
+      block_id: blockId,
+      draft_vi: payload.reference_vi || "",
+      reference_vi: payload.reference_vi || "",
+      source: payload.source || "human",
+      translated_by: currentUser(),
+      ai_model: payload.ai_model || "",
+      user: currentUser(),
+    }), { success: "Reference draft saved", fail: "Reference draft failed" });
   }
   function markReviewedReference(referenceId) {
     const r = references.find(x => x.reference_id === referenceId);
     if (!r) return;
-    if (!r.reference_vi?.trim()) return toast("Reference cannot be reviewed", "bad", "reference_vi is empty.");
-    if (!r.source) return toast("Reference cannot be reviewed", "bad", "source must be human or ai_assisted_verified.");
-    if (r.ai_model && r.source !== "ai_assisted_verified") {
-      return toast("AI-touched reference needs verified source", "bad", "Set source = ai_assisted_verified after human revision.");
-    }
-    updateReference(referenceId, { status: "reviewed", reviewed_by: "U2 · Mai", canonical: true });
-    toast("Reference marked reviewed", "good");
+    mutate(() => API.reviewReference(activeDocId, referenceId, {
+      reference_vi: r.reference_vi || r.draft_vi || "",
+      source: r.source || "",
+      reviewed_by: currentUser(),
+      ai_model: r.ai_model || "",
+      prompt_id: r.prompt_id || "",
+      user: currentUser(),
+    }), { success: "Reference marked reviewed", fail: "Reference cannot be reviewed" });
   }
   function lockReference(referenceId) {
-    const r = references.find(x => x.reference_id === referenceId);
-    if (!r || r.status !== "reviewed") return toast("Only reviewed references can be locked", "bad");
-    updateReference(referenceId, { status: "locked", canonical: true });
-    toast("Reference locked", "good");
+    mutate(() => API.lockReference(activeDocId, referenceId, { user: currentUser() }), { success: "Reference locked", fail: "Only reviewed references can be locked" });
   }
 
   function deleteTerm(t) {
-    const refCount = t.occurrences.length;
-    if (t.status === "locked" || refCount > 1) {
-      setModal({ kind: "delete-blocked", term: t, refCount });
-      return;
-    }
-    setGlossary(g => g.filter(x => x.term_id !== t.term_id));
-    touch();
-    toast(`Deleted term "${t.source_term}"`, "info");
+    mutate(() => API.deleteGlossary(activeDocId, t.term_id, { user: currentUser() }), {
+      success: `Deleted term "${t.source_term}"`,
+      fail: "Cannot delete term",
+    });
   }
 
-  function runValidate() {
+  async function runValidate() {
     setRightActive("validate");
-    toast(`Validation: ${errorCount} error${errorCount !== 1 ? "s" : ""}, ${errors.filter(e => e.severity === "warning").length} warning`, errorCount ? "bad" : "good");
+    try {
+      const report = await API.validate(activeDocId, { user: currentUser() });
+      const items = normalizeErrors(report);
+      setErrors(items);
+      toast(`Validation: ${report.errors?.length || 0} error${(report.errors?.length || 0) !== 1 ? "s" : ""}, ${report.warnings?.length || 0} warning`, report.ok ? "good" : "bad");
+    } catch (err) {
+      setErrors((err.errors || []).map(e => ({ severity: "error", ...e })));
+      toast("Validation failed", "bad", errorMessage(err));
+    }
   }
   function jumpTo(e) { if (e.block_id) { selectBlock(e.block_id); toast(`Jumped to ${e.block_id}`, "info"); } }
   function doExport() { setModal({ kind: "export" }); }
   function doFreeze() { setModal({ kind: "freeze" }); }
 
-  /* keyboard: cmd/ctrl+enter mark reviewed */
+  async function confirmExport() {
+    const result = await mutate(() => API.exportProject(activeDocId, { user: currentUser() }), { refresh: false });
+    if (result) {
+      setModal(null);
+      toast("Exported current package", "good", result.zip || result.path || "Export created.");
+    }
+  }
+  async function confirmFreeze() {
+    try {
+      const result = await API.freezeProject(activeDocId, { user: currentUser() });
+      setModal(null);
+      await loadDataset(activeDocId, { silent: true });
+      toast("Dataset snapshot frozen", "good", `${result.version || "versioned"} · ${result.zip || ""}`);
+    } catch (err) {
+      const first = err.errors?.[0] || {};
+      setModal({ kind: "freeze", serverReasons: first.reasons || [errorMessage(err)] });
+      toast("Freeze blocked", "bad", (first.reasons || []).join("; ") || errorMessage(err));
+    }
+  }
+
   useEffect(() => {
     function onKey(ev) {
       if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter" && !editing) { ev.preventDefault(); markReviewed(); }
@@ -373,10 +694,44 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   });
 
+  if (loading) {
+    return <StartupState title="Loading backend dataset" message={`Connecting to ${API.baseUrl}...`} />;
+  }
+  if (bootError) {
+    return (
+      <>
+        <StartupState title="Backend offline" message="The UI could not reach the Flask backend. Start the backend on port 5000, then retry." secondary={bootError} action="Retry" onAction={boot} />
+        <Toasts items={toasts} onDismiss={dismiss} />
+      </>
+    );
+  }
+
   if (view === "project") {
     return (
       <>
-        <ProjectSourceScreen docInfo={docInfo} onPatchDoc={patchDoc} onBack={() => setView("workspace")} onExtract={runExtract} />
+        <ProjectSourceScreen
+          projects={projects}
+          activeDocId={activeDocId}
+          docInfo={docInfo || { doc_id: activeDocId, metadata: {}, provenance: {} }}
+          chapters={chapters}
+          blocks={blocks}
+          errors={errors}
+          onSelectProject={selectProject}
+          onCreateProject={createProject}
+          onPatchDoc={patchDoc}
+          onUploadSource={uploadSource}
+          onBack={() => setView("workspace")}
+          onExtract={runExtract}
+        />
+        <Toasts items={toasts} onDismiss={dismiss} />
+      </>
+    );
+  }
+
+  if (!block || !docInfo) {
+    return (
+      <>
+        <StartupState title="No extracted document" message="Open Project / Source, upload a TXT or EPUB file, then run Extract." action="Open Project / Source" onAction={() => setView("project")} />
         <Toasts items={toasts} onDismiss={dismiss} />
       </>
     );
@@ -388,54 +743,45 @@ function App() {
         onValidate={runValidate} onExport={doExport} onFreeze={doFreeze}
         freezeReady={freezeReady} freezeReasons={freezeReasons} />
       <div className="workspace">
-        <LeftSidebar blocks={visibleBlocks} chapters={DATA.CHAPTERS} review={review}
+        <LeftSidebar docInfo={docInfo} projects={projects} blocks={visibleBlocks} chapters={chapters} review={review}
           annoSet={annoSet} selectedId={selectedId} onSelect={selectBlock}
+          onSelectProject={selectProject}
           filters={filters} onToggleFilter={toggleFilter} counts={filterCounts} total={blocks.length}
+          errors={errors}
           onOpenProjectSource={() => setView("project")} />
-        <CenterEditor block={block} reviewed={!!review.blocks[selectedId]?.reviewed} spans={spans}
+        <CenterEditor block={block} reviewed={!!review.blocks?.[selectedId]?.reviewed} spans={spans}
           editing={editing} onEdit={() => setEditing(true)} onCommitClean={commitClean} onCancelEdit={() => setEditing(false)}
           onChangeType={changeType} onToggleOpening={toggleOpening} onToggleFlag={toggleFlag} onMarkReviewed={markReviewed}
           onAddGlossary={addGlossary} onAddEntity={addEntity} />
         <RightPanel active={rightActive} onSetActive={setRightActive} counts={rpCounts}
           ctx={{ terms: blockTerms, entities: blockEntities, allEntities: entities, block, summary, references, errors, stats, freezeReasons,
             onDeleteTerm: deleteTerm, onUpdateTerm: updateTerm, onUpdateEntity: updateEntity, onUpdateSummary: updateSummary,
-            onUpdateReference: updateReference, onSaveDraft: saveDraft, onMarkReviewedReference: markReviewedReference,
+            onUpdateReference: updateReference, onCreateReference: createReferenceDraft, onSaveDraft: saveDraft, onMarkReviewedReference: markReviewedReference,
             onLockReference: lockReference, onUpdateDiscourse: updateDiscourse, onJump: jumpTo }} />
       </div>
 
       <Toasts items={toasts} onDismiss={dismiss} />
 
-      {modal?.kind === "delete-blocked" && (
-        <Modal title="Cannot delete term" icon={Ic.lock} tone="bad" onClose={() => setModal(null)}
-          actions={<button className="btn" onClick={() => setModal(null)}>Close</button>}>
-          <p>The term <b className="mono">{modal.term.source_term}</b> {modal.term.status === "locked"
-            ? <>is <b>locked</b> and part of the canonical glossary.</>
-            : <>is still referenced by <b>{modal.refCount} occurrences</b> across the document.</>}
-          </p>
-          <p className="muted">Remove its occurrences first, or change status from <span className="mono">locked</span>, before deleting.</p>
-        </Modal>
-      )}
-
       {modal?.kind === "export" && (
         <Modal title="Export dataset" icon={Ic.upload} onClose={() => setModal(null)}
           actions={<><button className="btn" onClick={() => setModal(null)}>Cancel</button>
-            <button className="btn primary" onClick={() => { setModal(null); toast("Exported current package", "info", errorCount ? "Marked as not freeze-ready." : "Ready for review handoff."); }}>Export package</button></>}>
+            <button className="btn primary" onClick={confirmExport}>Export package</button></>}>
           <p>Exports the current dataset package. It may still be a working package if validation or review gates are not clear.</p>
           <ul className="file-list">
             {["document.json","glossary.jsonl","entities.jsonl","chapter_summaries.jsonl","manual_reference_subset.jsonl"].map(f =>
               <li key={f}><Ic.file size={12} /><span className="mono">{f}</span></li>)}
           </ul>
-          <p className="muted">{errorCount > 0 ? <><Ic.alert size={11} /> {errorCount} validation error(s) present.</> : "No validation errors in the current mock result."}</p>
+          <p className="muted">{errorCount > 0 ? <><Ic.alert size={11} /> {errorCount} validation error(s) present.</> : "No validation errors in the current report."}</p>
         </Modal>
       )}
 
       {modal?.kind === "freeze" && (
         <Modal title="Freeze dataset" icon={Ic.snow} onClose={() => setModal(null)}
           actions={<><button className="btn" onClick={() => setModal(null)}>Close</button>
-            <button className="btn primary" disabled={!freezeReady} onClick={() => { setModal(null); toast("Dataset snapshot frozen", "good", "This creates a versioned freeze when backend is wired."); }}><Ic.snow size={12} />Freeze snapshot</button></>}>
+            <button className="btn primary" disabled={!freezeReady && !modal.serverReasons} onClick={confirmFreeze}><Ic.snow size={12} />Freeze snapshot</button></>}>
           <p>Freeze creates a validated, versioned snapshot. It is blocked until validation, review, references, spans, summaries, and provenance gates are clear.</p>
           <div className="freeze-checks">
-            {freezeReasons.length ? freezeReasons.map(reason => (
+            {(modal.serverReasons || freezeReasons).length ? (modal.serverReasons || freezeReasons).map(reason => (
               <div key={reason} className="fc-row bad"><Ic.xCircle size={13} />{reason}</div>
             )) : <div className="fc-row ok"><Ic.checkCircle size={13} />All freeze gates are clear.</div>}
           </div>
