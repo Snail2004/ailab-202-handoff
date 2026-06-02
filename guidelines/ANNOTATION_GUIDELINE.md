@@ -59,6 +59,7 @@ Annotate entity khi là:
 
 Field quan trọng:
 
+- `entity_type`: schema hiện nhận `person`, `place`, `org`, `concept`. Với nhân vật văn học, kể cả nhân vật động vật có vai trò nhân vật, dùng `person` để validation pass.
 - `canonical_source`
 - `canonical_target`
 - `aliases_source`
