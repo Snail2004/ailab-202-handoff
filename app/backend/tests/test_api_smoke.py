@@ -69,6 +69,12 @@ class BackendApiSmokeTest(unittest.TestCase):
     def _extraction_report(self, doc_id: str) -> dict:
         return json.loads((self._project_root(doc_id) / "working" / "extraction_report.json").read_text(encoding="utf-8"))
 
+    def _jsonl_rows(self, doc_id: str, filename: str) -> list[dict]:
+        path = self._project_root(doc_id) / "canonical" / filename
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
     def _assert_toc_report(self, report: dict) -> None:
         self.assertIn("toc", report)
         for key in ("toc_source", "toc_items", "chapters_matched", "match_rate", "fallback_used", "low_confidence"):
@@ -354,6 +360,141 @@ class BackendApiSmokeTest(unittest.TestCase):
 
         dataset = self.client.get("/api/projects/gold_demo_01/dataset").get_json()
         self.assertTrue(dataset["data"]["review_state"]["blocks"][block_id]["reviewed"])
+
+    def test_patch_block_reanchors_shifted_spans_and_undo_restores(self):
+        doc_id = "span_reanchor_shift"
+        dataset = self._make_txt_project(
+            doc_id,
+            b"Chapter 1\n\nFilby became pensive. Clearly, the Time Traveller proceeded.",
+        )
+        block = next(item for item in dataset["blocks"] if "Filby" in item["clean_text"])
+        old_text = block["clean_text"]
+        filby_start = old_text.index("Filby")
+        time_start = old_text.index("Time Traveller")
+
+        entity = self.client.post(f"/api/projects/{doc_id}/entities/from-selection", json={
+            "block_id": block["block_id"],
+            "start": filby_start,
+            "end": filby_start + len("Filby"),
+            "surface": "Filby",
+            "user": "tester",
+        })
+        self.assertEqual(entity.status_code, 201)
+        glossary = self.client.post(f"/api/projects/{doc_id}/glossary/from-selection", json={
+            "block_id": block["block_id"],
+            "start": time_start,
+            "end": time_start + len("Time Traveller"),
+            "source_term": "Time Traveller",
+            "expected_target": "Time Traveller",
+            "user": "tester",
+        })
+        self.assertEqual(glossary.status_code, 201)
+        term_id = glossary.get_json()["data"]["term_id"]
+
+        new_text = old_text.replace("Filby", "Filb", 1)
+        patch = self.client.patch(f"/api/projects/{doc_id}/blocks/{block['block_id']}", json={
+            "clean_text": new_text,
+            "user": "tester",
+        })
+        self.assertEqual(patch.status_code, 200)
+        payload = patch.get_json()["data"]
+        self.assertEqual(payload["relocated_count"], 1)
+        self.assertEqual(len(payload["stale_spans"]), 1)
+        self.assertEqual(payload["stale_spans"][0]["kind"], "entity")
+
+        rows = self._jsonl_rows(doc_id, "glossary.jsonl")
+        term = next(row for row in rows if row["term_id"] == term_id)
+        span = term["occurrences"][0]["span"]
+        self.assertEqual(span, [time_start - 1, time_start - 1 + len("Time Traveller")])
+        self.assertEqual(new_text[span[0]:span[1]], "Time Traveller")
+
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertTrue(dataset["review_state"]["blocks"][block["block_id"]]["needs_retag"])
+
+        undo = self.client.post(f"/api/projects/{doc_id}/undo", json={"user": "tester"})
+        self.assertEqual(undo.status_code, 200)
+        rows = self._jsonl_rows(doc_id, "glossary.jsonl")
+        term = next(row for row in rows if row["term_id"] == term_id)
+        self.assertEqual(term["occurrences"][0]["span"], [time_start, time_start + len("Time Traveller")])
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        restored = next(item for item in dataset["blocks"] if item["block_id"] == block["block_id"])
+        self.assertEqual(restored["clean_text"], old_text)
+
+    def test_patch_block_reanchors_repeated_surfaces(self):
+        doc_id = "span_reanchor_repeated"
+        source = b"Chapter 1\n\nTime Traveller met the Time Traveller while the Time Traveller waited."
+        dataset = self._make_txt_project(doc_id, source)
+        block = next(item for item in dataset["blocks"] if "Time Traveller" in item["clean_text"])
+        old_text = block["clean_text"]
+        positions = []
+        cursor = 0
+        while True:
+            found = old_text.find("Time Traveller", cursor)
+            if found == -1:
+                break
+            positions.append(found)
+            cursor = found + len("Time Traveller")
+        self.assertEqual(len(positions), 3)
+
+        term_ids = []
+        for pos in positions:
+            created = self.client.post(f"/api/projects/{doc_id}/glossary/from-selection", json={
+                "block_id": block["block_id"],
+                "start": pos,
+                "end": pos + len("Time Traveller"),
+                "source_term": "Time Traveller",
+                "expected_target": "Time Traveller",
+                "user": "tester",
+            })
+            self.assertEqual(created.status_code, 201)
+            term_ids.append(created.get_json()["data"]["term_id"])
+
+        prefix = "Note: "
+        patch = self.client.patch(f"/api/projects/{doc_id}/blocks/{block['block_id']}", json={
+            "clean_text": prefix + old_text,
+            "user": "tester",
+        })
+        self.assertEqual(patch.status_code, 200)
+        payload = patch.get_json()["data"]
+        self.assertEqual(payload["relocated_count"], 3)
+        self.assertEqual(payload["stale_spans"], [])
+
+        rows = self._jsonl_rows(doc_id, "glossary.jsonl")
+        by_id = {row["term_id"]: row for row in rows}
+        for term_id, old_start in zip(term_ids, positions):
+            span = by_id[term_id]["occurrences"][0]["span"]
+            self.assertEqual(span, [old_start + len(prefix), old_start + len(prefix) + len("Time Traveller")])
+            self.assertEqual((prefix + old_text)[span[0]:span[1]], "Time Traveller")
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertFalse(dataset["review_state"]["blocks"][block["block_id"]]["needs_retag"])
+
+    def test_patch_block_marks_span_stale_when_surface_is_edited(self):
+        doc_id = "span_reanchor_surface_changed"
+        dataset = self._make_txt_project(doc_id, b"Chapter 1\n\nAlice arrived.")
+        block = next(item for item in dataset["blocks"] if "Alice" in item["clean_text"])
+        old_text = block["clean_text"]
+        start = old_text.index("Alice")
+        created = self.client.post(f"/api/projects/{doc_id}/glossary/from-selection", json={
+            "block_id": block["block_id"],
+            "start": start,
+            "end": start + len("Alice"),
+            "source_term": "Alice",
+            "expected_target": "Alice",
+            "user": "tester",
+        })
+        self.assertEqual(created.status_code, 201)
+
+        patch = self.client.patch(f"/api/projects/{doc_id}/blocks/{block['block_id']}", json={
+            "clean_text": old_text.replace("Alice", "Alicia", 1),
+            "user": "tester",
+        })
+        self.assertEqual(patch.status_code, 200)
+        payload = patch.get_json()["data"]
+        self.assertEqual(payload["relocated_count"], 0)
+        self.assertEqual(len(payload["stale_spans"]), 1)
+        self.assertEqual(payload["stale_spans"][0]["expected_surface"], "Alice")
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertTrue(dataset["review_state"]["blocks"][block["block_id"]]["needs_retag"])
 
     def test_add_glossary_from_selection_and_patch(self):
         block_id = "gold_demo_01_ch01_b007"

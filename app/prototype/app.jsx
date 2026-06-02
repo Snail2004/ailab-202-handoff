@@ -611,8 +611,16 @@ function App() {
     setEditing(false);
     const result = await mutate(() => API.patchBlock(activeDocId, block.block_id, { clean_text: text, user: currentUser() }), { refresh: true });
     const broke = result?.stale_spans?.length || 0;
-    if (broke > 0) toast(`Clean text saved · ${broke} annotation span${broke > 1 ? "s" : ""} no longer match`, "bad", "Re-tag from the right panel to clear the warning.");
-    else toast("Clean text saved", "good");
+    const relocated = result?.relocated_count || 0;
+    if (broke > 0 && relocated > 0) {
+      toast(`Clean text saved · ${relocated} span${relocated > 1 ? "s" : ""} auto-relocated, ${broke} need re-tag`, "bad", "Re-tag only the highlighted stale span(s).");
+    } else if (broke > 0) {
+      toast(`Clean text saved · ${broke} annotation span${broke > 1 ? "s" : ""} no longer match`, "bad", "Re-tag from the right panel to clear the warning.");
+    } else if (relocated > 0) {
+      toast(`Clean text saved · ${relocated} span${relocated > 1 ? "s" : ""} auto-relocated`, "good");
+    } else {
+      toast("Clean text saved", "good");
+    }
   }
 
   async function addGlossary(sel) {

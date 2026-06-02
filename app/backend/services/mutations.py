@@ -1,5 +1,6 @@
 from copy import deepcopy
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -175,32 +176,80 @@ def _assert_span_matches(block: dict[str, Any], span: list[int], surface: str | 
     return selected
 
 
-def _stale_spans_for_block(project_path: Path, block: dict[str, Any]) -> list[dict[str, Any]]:
-    block_id = block.get("block_id")
-    text = block.get("clean_text") or ""
-    stale: list[dict[str, Any]] = []
+def _reanchor_span(
+    old_text: str,
+    new_text: str,
+    span: Any,
+    expected: Any,
+    opcodes: list[tuple[str, int, int, int, int]],
+) -> list[int] | None:
+    if not isinstance(expected, str) or not expected:
+        return None
+    if not isinstance(span, list) or len(span) != 2:
+        return None
+    start, end = span
+    if not isinstance(start, int) or not isinstance(end, int):
+        return None
+    if not (0 <= start < end <= len(old_text)):
+        return None
+    if old_text[start:end] != expected:
+        return None
 
-    for row in read_jsonl(_jsonl_path(project_path, "glossary")):
+    for tag, i1, i2, j1, _j2 in opcodes:
+        if tag == "equal" and i1 <= start and end <= i2:
+            new_start = j1 + (start - i1)
+            new_end = j1 + (end - i1)
+            if new_text[new_start:new_end] == expected:
+                return [new_start, new_end]
+            return None
+    return None
+
+
+def _reanchor_or_stale_spans_for_block(
+    project_path: Path,
+    block_id: str,
+    old_text: str,
+    new_text: str,
+) -> tuple[list[dict[str, Any]], int]:
+    opcodes = SequenceMatcher(None, old_text, new_text, autojunk=False).get_opcodes()
+    stale: list[dict[str, Any]] = []
+    relocated_count = 0
+
+    glossary = read_jsonl(_jsonl_path(project_path, "glossary"))
+    glossary_changed = False
+    for row in glossary:
         for occ in row.get("occurrences", []):
             if occ.get("block_id") == block_id:
                 span = occ.get("span") or []
-                start, end = span if len(span) == 2 else (None, None)
                 expected = row.get("source_term")
-                actual = text[start:end] if isinstance(start, int) and isinstance(end, int) and end <= len(text) else None
-                if actual != expected:
+                new_span = _reanchor_span(old_text, new_text, span, expected, opcodes)
+                if new_span is None:
                     stale.append({"kind": "term", "id": row.get("term_id"), "expected_surface": expected, "span": span})
+                elif new_span != span:
+                    occ["span"] = new_span
+                    glossary_changed = True
+                    relocated_count += 1
+    if glossary_changed:
+        write_jsonl_atomic(_jsonl_path(project_path, "glossary"), glossary)
 
-    for row in read_jsonl(_jsonl_path(project_path, "entities")):
+    entities = read_jsonl(_jsonl_path(project_path, "entities"))
+    entities_changed = False
+    for row in entities:
         for mention in row.get("mentions", []):
             if mention.get("block_id") == block_id and mention.get("span"):
                 span = mention.get("span") or []
-                start, end = span if len(span) == 2 else (None, None)
                 expected = mention.get("surface")
-                actual = text[start:end] if isinstance(start, int) and isinstance(end, int) and end <= len(text) else None
-                if actual != expected:
+                new_span = _reanchor_span(old_text, new_text, span, expected, opcodes)
+                if new_span is None:
                     stale.append({"kind": "entity", "id": row.get("entity_id"), "expected_surface": expected, "span": span})
+                elif new_span != span:
+                    mention["span"] = new_span
+                    entities_changed = True
+                    relocated_count += 1
+    if entities_changed:
+        write_jsonl_atomic(_jsonl_path(project_path, "entities"), entities)
 
-    return stale
+    return stale, relocated_count
 
 
 def patch_metadata(project_path: Path, payload: dict[str, Any], user: str = "local") -> dict[str, Any]:
@@ -219,18 +268,28 @@ def patch_block(project_path: Path, block_id: str, payload: dict[str, Any], user
     _reject_unknown(payload, EDITABLE_BLOCK)
     document = _read_document(project_path)
     _, block = _find_block(document, block_id)
-    old_clean_text = block.get("clean_text")
+    old_clean_text = block.get("clean_text") or ""
+    stale_spans: list[dict[str, Any]] = []
+    relocated_count = 0
+    if "clean_text" in payload and payload["clean_text"] != old_clean_text:
+        stale_spans, relocated_count = _reanchor_or_stale_spans_for_block(
+            project_path,
+            block_id,
+            old_clean_text,
+            str(payload["clean_text"]),
+        )
+        _mark_needs_retag(project_path, document, block_id, bool(stale_spans))
     for key in EDITABLE_BLOCK:
         if key in payload:
             block[key] = payload[key]
-    stale_spans: list[dict[str, Any]] = []
-    if "clean_text" in payload and payload["clean_text"] != old_clean_text:
-        stale_spans = _stale_spans_for_block(project_path, block)
-        if stale_spans:
-            _mark_needs_retag(project_path, document, block_id, True)
     _write_document(project_path, document)
-    log_event(project_path, "patch_block", {"block_id": block_id, "fields": sorted(set(payload) & EDITABLE_BLOCK)}, user)
-    return {"block": block, "stale_spans": stale_spans}
+    log_event(project_path, "patch_block", {
+        "block_id": block_id,
+        "fields": sorted(set(payload) & EDITABLE_BLOCK),
+        "relocated_count": relocated_count,
+        "stale_count": len(stale_spans),
+    }, user)
+    return {"block": block, "stale_spans": stale_spans, "relocated_count": relocated_count}
 
 
 def patch_block_review(project_path: Path, block_id: str, payload: dict[str, Any], user: str = "local") -> dict[str, Any]:
