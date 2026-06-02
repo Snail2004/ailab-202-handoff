@@ -631,3 +631,134 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--r-md); padding: 9px 11px;
 }
 .extract-note svg { color: var(--amber); flex: 0 0 auto; margin-top: 1px; }
+
+.normalizer-panel { grid-column: 1 / -1; }
+.normalizer-intro {
+  margin: -4px 0 12px;
+  max-width: 780px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink-3);
+}
+.normalizer-steps { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: 12px; align-items: start; }
+.normalizer-step {
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  border-radius: var(--r-md);
+  padding: 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.normalizer-step-head { display: flex; align-items: flex-start; gap: 9px; }
+.step-num {
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  display: inline-grid;
+  place-items: center;
+  background: var(--accent-weak);
+  color: var(--accent-ink);
+  font-size: 10px;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+.step-title { font-size: 12.5px; font-weight: 650; color: var(--ink); }
+.step-sub { font-size: 11px; color: var(--ink-3); line-height: 1.45; margin-top: 1px; }
+.normalizer-actions { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; }
+.normalizer-actions.end { justify-content: flex-end; }
+.hidden-file { display: none !important; }
+.normalizer-stats,
+.normalizer-summary-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.normalizer-stats span,
+.normalizer-summary-grid span {
+  min-height: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.normalizer-stats b,
+.normalizer-summary-grid b { color: var(--ink); }
+.json-textarea {
+  width: 100%;
+  min-height: 132px;
+  resize: vertical;
+  border: 1px solid var(--border-2);
+  background: var(--panel);
+  border-radius: var(--r-sm);
+  padding: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink);
+  outline: none;
+}
+.json-textarea:focus { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-weak); }
+.normalizer-preview {
+  grid-column: 1 / -1;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: var(--r-md);
+  padding: 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.normalizer-preview.bad { border-color: #eecac6; background: var(--red-weak); }
+.normalizer-preview-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 12.5px; font-weight: 650; }
+.normalizer-errors { display: flex; flex-direction: column; gap: 5px; }
+.normalizer-error { display: flex; align-items: flex-start; gap: 7px; font-size: 12px; line-height: 1.45; color: var(--red); }
+.normalizer-error svg { flex: 0 0 auto; margin-top: 1px; }
+.normalizer-chapters { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 5px; }
+.normalizer-chapter {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  gap: 7px;
+  align-items: center;
+  min-height: 28px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  border-radius: var(--r-sm);
+  padding: 4px 7px;
+  font-size: 11.5px;
+}
+.normalizer-chapter span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.normalizer-dropped {
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  border-radius: var(--r-sm);
+  padding: 7px 9px;
+}
+.normalizer-dropped summary { cursor: pointer; font-size: 11.5px; color: var(--ink-2); font-weight: 650; }
+.normalizer-drop {
+  display: grid;
+  grid-template-columns: 44px 120px minmax(0, 1fr);
+  gap: 8px;
+  padding-top: 7px;
+  font-size: 11px;
+  align-items: baseline;
+}
+.normalizer-drop .faint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.normalizer-review {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border: 1px solid #efd8a7;
+  background: var(--amber-weak);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--amber);
+}
+.normalizer-review input { margin-top: 2px; }

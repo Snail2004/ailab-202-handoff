@@ -574,6 +574,58 @@ function App() {
     }
   }
 
+  async function buildNormalizeCandidate() {
+    if (!activeDocId) return null;
+    try {
+      const candidate = await API.normalizeCandidateParts(activeDocId);
+      toast("Candidate parts built", "good", `${candidate.parts?.length || 0} parts · ${candidate.source_fingerprint || ""}`);
+      return candidate;
+    } catch (err) {
+      toast("Build candidate failed", "bad", errorMessage(err));
+      return null;
+    }
+  }
+
+  async function importNormalizePlan(plan) {
+    if (!activeDocId) return null;
+    try {
+      const result = await API.importStructurePlan(activeDocId, { plan, user: currentUser() });
+      const preview = result.preview || {};
+      toast("StructurePlan valid", preview.low_confidence || preview.needs_human_check ? "info" : "good",
+        `${preview.chapters?.length || 0} chapters · body ${preview.body_coverage || "n/a"}`);
+      return result;
+    } catch (err) {
+      toast("StructurePlan invalid", "bad", errorMessage(err));
+      return {
+        ok: false,
+        errors: err.errors || [],
+        warnings: err.warnings || [],
+        validation: err.payload?.data?.validation || null,
+        source_fingerprint: err.payload?.data?.source_fingerprint || null,
+      };
+    }
+  }
+
+  async function applyNormalizePlan(options = {}) {
+    if (!activeDocId) return null;
+    try {
+      const job = await API.applyNormalizedStructure(activeDocId, {
+        approved: true,
+        overwrite: !!options.overwrite,
+        force: !!options.force,
+        user: currentUser(),
+      });
+      await refreshProjects();
+      await loadDataset(activeDocId, { silent: true });
+      setView("workspace");
+      toast("Normalized structure applied", "good", `${job.document?.blocks || 0} blocks · ${job.document?.chapters || 0} chapters`);
+      return job;
+    } catch (err) {
+      toast("Apply normalized structure failed", "bad", errorMessage(err));
+      return null;
+    }
+  }
+
   function changeType(t) {
     if (!block) return;
     setBlocks(bs => bs.map(b => b.block_id === block.block_id ? { ...b, block_type: t } : b));
@@ -875,6 +927,9 @@ function App() {
           onUploadSource={uploadSource}
           onBack={() => setView("workspace")}
           onExtract={runExtract}
+          onBuildNormalizeCandidate={buildNormalizeCandidate}
+          onImportNormalizePlan={importNormalizePlan}
+          onApplyNormalizePlan={applyNormalizePlan}
         />
         <Toasts items={toasts} onDismiss={dismiss} />
       </>

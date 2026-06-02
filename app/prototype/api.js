@@ -81,6 +81,9 @@
       return request(`/projects/${encodeURIComponent(docId)}/source`, { method: "POST", formData: form });
     },
     extract: (docId, payload) => request(`/projects/${encodeURIComponent(docId)}/extract`, { method: "POST", body: payload || {} }),
+    normalizeCandidateParts: (docId) => request(`/projects/${encodeURIComponent(docId)}/normalize/candidate-parts`, { method: "POST", body: {} }),
+    importStructurePlan: (docId, payload) => request(`/projects/${encodeURIComponent(docId)}/normalize/plan`, { method: "POST", body: payload || {} }),
+    applyNormalizedStructure: (docId, payload) => request(`/projects/${encodeURIComponent(docId)}/normalize/apply`, { method: "POST", body: payload || {} }),
     getJob: (docId, jobId) => request(`/projects/${encodeURIComponent(docId)}/jobs/${encodeURIComponent(jobId)}`),
     getDataset: (docId) => request(`/projects/${encodeURIComponent(docId)}/dataset`),
     getHistory: (docId) => request(`/projects/${encodeURIComponent(docId)}/history`),

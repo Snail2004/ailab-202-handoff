@@ -93,6 +93,41 @@ class BackendApiSmokeTest(unittest.TestCase):
             previous_order = chapter["order_index"]
             self.assertFalse(any(phrase in chapter["title"].upper() for phrase in boilerplate))
 
+    def _make_unextracted_txt_project(self, doc_id: str, source: bytes) -> None:
+        create = self.client.post("/api/projects", json={
+            "doc_id": doc_id,
+            "metadata": {
+                "title": doc_id,
+                "author": "Tester",
+                "source_format": "txt",
+                "license": "public-domain",
+                "contamination_risk": "low",
+            },
+        })
+        self.assertEqual(create.status_code, 201)
+        upload = self.client.post(
+            f"/api/projects/{doc_id}/source",
+            data={"file": (BytesIO(source), "source.txt")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(upload.status_code, 201)
+
+    def _minimal_structure_plan(self, doc_id: str, fingerprint: str) -> dict:
+        return {
+            "doc_id": doc_id,
+            "source_fingerprint": fingerprint,
+            "drop_parts": [{"part_index": 0, "reason": "title_page"}],
+            "chapter_headings": [
+                {"part_index": 1, "title": "I"},
+                {"part_index": 3, "title": "II"},
+            ],
+            "merge_parts": [],
+            "epub_section_roles": [],
+            "flags": [],
+            "confidence": 0.95,
+            "notes": "Synthetic API fixture.",
+        }
+
     def _minimal_epub(self, opf: str, files: dict[str, str]) -> BytesIO:
         epub = BytesIO()
         with ZipFile(epub, "w") as zf:
@@ -143,6 +178,108 @@ class BackendApiSmokeTest(unittest.TestCase):
 
         title_patch = self.client.patch(f"/api/projects/{doc_id}", json={"title": "Wrong route"})
         self.assertEqual(title_patch.status_code, 400)
+
+    def test_normalize_candidate_plan_preview_and_apply(self):
+        doc_id = "normalize_two_chapters"
+        source = (
+            b"Title.\n\nI\n\nFirst chapter body has enough text for coverage.\n\n"
+            b"II\n\nSecond chapter body has enough text for coverage."
+        )
+        self._make_unextracted_txt_project(doc_id, source)
+
+        candidate_response = self.client.post(f"/api/projects/{doc_id}/normalize/candidate-parts")
+        self.assertEqual(candidate_response.status_code, 201)
+        candidate = candidate_response.get_json()["data"]
+        self.assertEqual(candidate["source_format"], "txt")
+        self.assertEqual(len(candidate["parts"]), 5)
+        self.assertEqual(candidate["parts"][1]["text"], "I")
+        self.assertTrue(self._project_root(doc_id).joinpath("working", "normalized", "candidate_parts.json").exists())
+
+        plan = self._minimal_structure_plan(doc_id, candidate["source_fingerprint"])
+        preview_response = self.client.post(f"/api/projects/{doc_id}/normalize/plan", json={"plan": plan})
+        self.assertEqual(preview_response.status_code, 201)
+        preview = preview_response.get_json()["data"]["preview"]
+        self.assertEqual([chapter["title"] for chapter in preview["chapters"]], ["I", "II"])
+        self.assertEqual(preview["body_coverage"], "2/2")
+        self.assertTrue(preview["content_invariance_ok"])
+        self.assertFalse(preview["low_confidence"])
+        self.assertFalse(self._project_root(doc_id).joinpath("canonical", "document.json").exists())
+
+        apply_response = self.client.post(f"/api/projects/{doc_id}/normalize/apply", json={
+            "approved": True,
+            "user": "tester",
+        })
+        self.assertEqual(apply_response.status_code, 201)
+        job = apply_response.get_json()["data"]
+        self.assertEqual(job["type"], "normalize_extract")
+
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertEqual([chapter["title"] for chapter in dataset["chapters"]], ["I", "II"])
+        self.assertEqual(len(dataset["blocks"]), 4)
+        self._assert_project_valid(doc_id)
+
+        report = json.loads(
+            self._project_root(doc_id)
+            .joinpath("working", "normalized", "normalization_report.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual(report["ai_provenance"]["prompt_id"], "source-structure-normalizer-v1")
+        self.assertFalse(report["ai_provenance"]["tool_called_llm"])
+
+    def test_normalize_invalid_plan_does_not_write_document(self):
+        doc_id = "normalize_bad_plan"
+        self._make_unextracted_txt_project(doc_id, b"Front.\n\nI\n\nBody.")
+        candidate = self.client.post(f"/api/projects/{doc_id}/normalize/candidate-parts").get_json()["data"]
+        plan = self._minimal_structure_plan(doc_id, candidate["source_fingerprint"])
+        plan["source_fingerprint"] = "wrong:fingerprint"
+
+        invalid = self.client.post(f"/api/projects/{doc_id}/normalize/plan", json={"plan": plan})
+        self.assertEqual(invalid.status_code, 400)
+        payload = invalid.get_json()
+        self.assertFalse(payload["ok"])
+        self.assertTrue(payload["errors"])
+        self.assertFalse(self._project_root(doc_id).joinpath("canonical", "document.json").exists())
+
+    def test_normalize_apply_requires_approval_and_preview(self):
+        doc_id = "normalize_requires_approval"
+        self._make_unextracted_txt_project(doc_id, b"I\n\nBody.")
+
+        no_preview = self.client.post(f"/api/projects/{doc_id}/normalize/apply", json={
+            "approved": True,
+            "user": "tester",
+        })
+        self.assertEqual(no_preview.status_code, 400)
+
+        candidate = self.client.post(f"/api/projects/{doc_id}/normalize/candidate-parts").get_json()["data"]
+        plan = {
+            "doc_id": doc_id,
+            "source_fingerprint": candidate["source_fingerprint"],
+            "drop_parts": [],
+            "chapter_headings": [{"part_index": 0, "title": "I"}],
+            "merge_parts": [],
+            "epub_section_roles": [],
+            "flags": [],
+            "confidence": 0.95,
+            "notes": "Approval guard fixture.",
+        }
+        preview = self.client.post(f"/api/projects/{doc_id}/normalize/plan", json={"plan": plan})
+        self.assertEqual(preview.status_code, 201)
+
+        unapproved = self.client.post(f"/api/projects/{doc_id}/normalize/apply", json={
+            "approved": False,
+            "user": "tester",
+        })
+        self.assertEqual(unapproved.status_code, 400)
+        self.assertFalse(self._project_root(doc_id).joinpath("canonical", "document.json").exists())
+
+    def test_normalize_default_extract_path_is_unchanged(self):
+        doc_id = "normalize_default_extract"
+        self._make_unextracted_txt_project(doc_id, b"Chapter 1\n\nDefault extract body.")
+        extract = self.client.post(f"/api/projects/{doc_id}/extract", json={"overwrite": False, "user": "tester"})
+        self.assertEqual(extract.status_code, 201)
+        report = self._extraction_report(doc_id)
+        self.assertNotIn("normalized_structure", report)
+        self.assertFalse(self._project_root(doc_id).joinpath("working", "normalized", "candidate_parts.json").exists())
 
     def test_project_delete_requires_confirmation_and_protects_sample(self):
         doc_id = "project_delete"

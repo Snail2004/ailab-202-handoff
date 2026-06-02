@@ -15,12 +15,21 @@ function ProjectSourceScreen({
   onUploadSource,
   onBack,
   onExtract,
+  onBuildNormalizeCandidate,
+  onImportNormalizePlan,
+  onApplyNormalizePlan,
 }) {
   const [file, setFile] = React.useState(null);
   const [confirmOverwrite, setConfirmOverwrite] = React.useState(false);
   const [confirmDelete, setConfirmDelete] = React.useState(false);
+  const [confirmNormalizeApply, setConfirmNormalizeApply] = React.useState(false);
   const [newDocId, setNewDocId] = React.useState("");
   const [projectNote, setProjectNote] = React.useState("");
+  const [normalizeCandidate, setNormalizeCandidate] = React.useState(null);
+  const [normalizePlanText, setNormalizePlanText] = React.useState("");
+  const [normalizeResult, setNormalizeResult] = React.useState(null);
+  const [normalizeBusy, setNormalizeBusy] = React.useState("");
+  const [normalizeReviewed, setNormalizeReviewed] = React.useState(false);
   const meta = docInfo.metadata || {};
   const prov = docInfo.provenance || {};
   const extracted = blocks.length > 0;
@@ -29,6 +38,11 @@ function ProjectSourceScreen({
 
   React.useEffect(() => {
     setProjectNote(selectedProject?.note || "");
+    setNormalizeCandidate(null);
+    setNormalizePlanText("");
+    setNormalizeResult(null);
+    setNormalizeBusy("");
+    setNormalizeReviewed(false);
   }, [selectedProject?.doc_id, selectedProject?.note]);
 
   function patchMetadata(patch) {
@@ -65,6 +79,99 @@ function ProjectSourceScreen({
     if (extracted) setConfirmOverwrite(true);
     else onExtract(false);
   }
+
+  function normalizeWarnings(preview) {
+    if (!preview) return [];
+    const warnings = [];
+    if (preview.low_confidence) warnings.push("low_confidence");
+    if (preview.needs_human_check) warnings.push("needs_human_check");
+    (preview.flags || []).forEach(flag => warnings.push(flag.reason || flag.flag || "flag"));
+    return [...new Set(warnings)];
+  }
+
+  async function buildCandidate() {
+    if (!activeDocId || !onBuildNormalizeCandidate) return;
+    setNormalizeBusy("candidate");
+    const candidate = await onBuildNormalizeCandidate();
+    if (candidate) {
+      setNormalizeCandidate(candidate);
+      setNormalizeResult(null);
+      setNormalizeReviewed(false);
+    }
+    setNormalizeBusy("");
+  }
+
+  function candidateJson() {
+    return normalizeCandidate ? JSON.stringify(normalizeCandidate, null, 2) : "";
+  }
+
+  async function copyCandidate() {
+    const text = candidateJson();
+    if (!text) return;
+    await navigator.clipboard.writeText(text);
+  }
+
+  function downloadCandidate() {
+    const text = candidateJson();
+    if (!text) return;
+    const blob = new Blob([text], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${activeDocId || "project"}_candidate_parts.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  async function loadPlanFile(event) {
+    const selected = event.target.files?.[0];
+    if (!selected) return;
+    const text = await selected.text();
+    setNormalizePlanText(text);
+    setNormalizeResult(null);
+    setNormalizeReviewed(false);
+    event.target.value = "";
+  }
+
+  async function validatePlan() {
+    if (!normalizePlanText.trim() || !onImportNormalizePlan) return;
+    let plan;
+    try {
+      plan = JSON.parse(normalizePlanText);
+    } catch (err) {
+      setNormalizeResult({
+        ok: false,
+        errors: [{ location: "StructurePlan JSON", message: err.message || String(err), severity: "error" }],
+        warnings: [],
+      });
+      return;
+    }
+    setNormalizeBusy("plan");
+    const result = await onImportNormalizePlan(plan);
+    setNormalizeResult(result);
+    setNormalizeReviewed(false);
+    setNormalizeBusy("");
+  }
+
+  function startNormalizeApply() {
+    if (extracted) setConfirmNormalizeApply(true);
+    else applyNormalized(false);
+  }
+
+  async function applyNormalized(overwrite) {
+    if (!onApplyNormalizePlan) return;
+    setNormalizeBusy("apply");
+    await onApplyNormalizePlan({ overwrite: !!overwrite });
+    setConfirmNormalizeApply(false);
+    setNormalizeBusy("");
+  }
+
+  const normalizePreview = normalizeResult?.preview || null;
+  const normalizeInvalid = normalizeResult && normalizeResult.ok === false;
+  const reviewRequired = normalizeWarnings(normalizePreview).length > 0;
+  const canApplyNormalize = !!normalizePreview && (!reviewRequired || normalizeReviewed);
 
   return (
     <div className="project-screen">
@@ -201,6 +308,123 @@ function ProjectSourceScreen({
               <span>Extract only lives here, not in the annotation workspace. Re-extracting can discard reviewed edits.</span>
             </div>
           </section>
+
+          <section className="project-panel normalizer-panel">
+            <div className="panel-title"><Ic.layers size={14} />Structure normalizer</div>
+            <p className="normalizer-intro">
+              Optional pre-extract step for sources with weak chapter structure. The tool only validates and applies an imported StructurePlan; it does not call an LLM.
+            </p>
+            <div className="normalizer-steps">
+              <div className="normalizer-step">
+                <div className="normalizer-step-head">
+                  <span className="step-num">1</span>
+                  <div>
+                    <div className="step-title">Build candidate parts</div>
+                    <div className="step-sub">Use this JSON with the source-structure-normalizer skill.</div>
+                  </div>
+                </div>
+                <div className="normalizer-actions">
+                  <button className="btn" disabled={!activeDocId || normalizeBusy === "candidate"} onClick={buildCandidate}>
+                    <Ic.layers size={13} />{normalizeBusy === "candidate" ? "Building..." : "Build candidate"}
+                  </button>
+                  <button className="btn" disabled={!normalizeCandidate} onClick={copyCandidate}><Ic.doc size={13} />Copy JSON</button>
+                  <button className="btn" disabled={!normalizeCandidate} onClick={downloadCandidate}><Ic.upload size={13} />Download JSON</button>
+                </div>
+                {normalizeCandidate && (
+                  <div className="normalizer-stats">
+                    <span><b>{normalizeCandidate.parts?.length || 0}</b> parts</span>
+                    <span><b>{normalizeCandidate.source_format}</b> format</span>
+                    <span className="mono">{normalizeCandidate.source_fingerprint}</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="normalizer-step">
+                <div className="normalizer-step-head">
+                  <span className="step-num">2</span>
+                  <div>
+                    <div className="step-title">Import StructurePlan</div>
+                    <div className="step-sub">Paste or upload the JSON plan produced by the skill.</div>
+                  </div>
+                </div>
+                <textarea
+                  className="json-textarea"
+                  value={normalizePlanText}
+                  placeholder='{"doc_id":"...","source_fingerprint":"...","chapter_headings":[...]}'
+                  rows={7}
+                  onChange={e => { setNormalizePlanText(e.target.value); setNormalizeResult(null); setNormalizeReviewed(false); }}
+                />
+                <div className="normalizer-actions">
+                  <label className="btn">
+                    <Ic.file size={13} />Load plan file
+                    <input className="hidden-file" type="file" accept=".json,application/json" onChange={loadPlanFile} />
+                  </label>
+                  <button className="btn primary" disabled={!normalizePlanText.trim() || normalizeBusy === "plan"} onClick={validatePlan}>
+                    <Ic.checkCircle size={13} />{normalizeBusy === "plan" ? "Validating..." : "Validate plan"}
+                  </button>
+                </div>
+              </div>
+
+              {(normalizeInvalid || normalizePreview) && (
+                <div className={"normalizer-preview " + (normalizeInvalid ? "bad" : "")}>
+                  <div className="normalizer-preview-head">
+                    <span>{normalizeInvalid ? "Plan blocked" : "Preview"}</span>
+                    {normalizePreview && <span className="mono">{normalizePreview.body_coverage || "body n/a"}</span>}
+                  </div>
+                  {normalizeInvalid && (
+                    <div className="normalizer-errors">
+                      {(normalizeResult.errors || normalizeResult.validation?.errors || []).map((err, idx) => (
+                        <div key={idx} className="normalizer-error"><Ic.xCircle size={12} />{err.location ? `${err.location}: ` : ""}{err.message}</div>
+                      ))}
+                    </div>
+                  )}
+                  {normalizePreview && (
+                    <>
+                      <div className="normalizer-summary-grid">
+                        <span><b>{normalizePreview.chapters?.length || 0}</b> chapters</span>
+                        <span><b>{normalizePreview.dropped?.length || 0}</b> dropped</span>
+                        <span><b>{normalizePreview.drop_fraction}</b> drop fraction</span>
+                        <span><b>{normalizePreview.content_invariance_ok ? "ok" : "check"}</b> content</span>
+                      </div>
+                      <div className="normalizer-chapters">
+                        {(normalizePreview.chapters || []).slice(0, 12).map(ch => (
+                          <div key={ch.order_index} className="normalizer-chapter">
+                            <span className="mono">{ch.order_index}</span>
+                            <span>{ch.title}</span>
+                            <span className="faint">{ch.n_blocks} blocks</span>
+                          </div>
+                        ))}
+                        {(normalizePreview.chapters || []).length > 12 && <div className="muted">+ {(normalizePreview.chapters || []).length - 12} more chapter(s)</div>}
+                      </div>
+                      {(normalizePreview.dropped || []).length > 0 && (
+                        <details className="normalizer-dropped">
+                          <summary>Dropped parts</summary>
+                          {(normalizePreview.dropped || []).slice(0, 8).map(item => (
+                            <div key={item.part_index} className="normalizer-drop">
+                              <span className="mono">#{item.part_index}</span>
+                              <span>{item.reason}</span>
+                              <span className="faint">{item.snippet}</span>
+                            </div>
+                          ))}
+                        </details>
+                      )}
+                      {reviewRequired && (
+                        <label className="normalizer-review">
+                          <input type="checkbox" checked={normalizeReviewed} onChange={e => setNormalizeReviewed(e.target.checked)} />
+                          <span>I reviewed low-confidence flags: {normalizeWarnings(normalizePreview).join(", ")}</span>
+                        </label>
+                      )}
+                      <div className="normalizer-actions end">
+                        <button className="btn primary" disabled={!canApplyNormalize || normalizeBusy === "apply"} onClick={startNormalizeApply}>
+                          <Ic.play size={13} />{normalizeBusy === "apply" ? "Applying..." : "Approve & extract normalized"}
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          </section>
         </div>
       </div>
 
@@ -225,6 +449,17 @@ function ProjectSourceScreen({
           </>}>
           <p>This removes the local project folder for <span className="mono">{activeDocId}</span>, including raw source, canonical files, working drafts, logs, and exports.</p>
           <p className="muted">This cannot be undone. Export or copy the project first if you need to preserve it.</p>
+        </Modal>
+      )}
+
+      {confirmNormalizeApply && (
+        <Modal title="Apply normalized structure" icon={Ic.alert} tone="bad" onClose={() => setConfirmNormalizeApply(false)}
+          actions={<>
+            <button className="btn" onClick={() => setConfirmNormalizeApply(false)}>Cancel</button>
+            <button className="btn primary" onClick={() => applyNormalized(true)}>Overwrite document</button>
+          </>}>
+          <p>Applying this normalized structure can overwrite <span className="mono">document.json</span> and reset review state for this project.</p>
+          <p className="muted">Use this only before annotation, or after exporting any work you need to keep.</p>
         </Modal>
       )}
     </div>

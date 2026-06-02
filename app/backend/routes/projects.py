@@ -1,7 +1,12 @@
-from flask import Blueprint, request
+from flask import Blueprint, jsonify, request
 
 from routes.common import error, ok
 from services.extraction import extract_project, read_job
+from services.normalize_flow import (
+    apply_normalized_document,
+    build_project_candidate_parts,
+    import_structure_plan,
+)
 from services.workspace import (
     ProjectError,
     create_project_shell,
@@ -114,6 +119,69 @@ def extract(doc_id: str):
             code = "confirm_overwrite_required"
         else:
             code = "extract_error"
+        return error(code, str(exc), 400)
+
+
+@bp.post("/projects/<doc_id>/normalize/candidate-parts")
+def normalize_candidate_parts(doc_id: str):
+    try:
+        if not has_project(doc_id):
+            return error("missing_project", "Project not found", 404)
+        candidate = build_project_candidate_parts(get_project_path(doc_id), doc_id)
+        return ok(candidate, status=201)
+    except ProjectError as exc:
+        return error("normalize_candidate_error", str(exc), 400)
+
+
+@bp.post("/projects/<doc_id>/normalize/plan")
+def normalize_plan(doc_id: str):
+    payload = request.get_json(silent=True) or {}
+    plan = payload.get("plan", payload)
+    if not isinstance(plan, dict):
+        return error("invalid_structure_plan", "StructurePlan JSON object is required.", 400)
+    try:
+        if not has_project(doc_id):
+            return error("missing_project", "Project not found", 404)
+        result = import_structure_plan(get_project_path(doc_id), doc_id, plan)
+        if not result.get("ok"):
+            validation = result.get("validation", {"errors": [], "warnings": []})
+            return jsonify({
+                "ok": False,
+                "data": {
+                    "source_fingerprint": result.get("source_fingerprint"),
+                    "validation": validation,
+                },
+                "errors": validation.get("errors", []),
+                "warnings": validation.get("warnings", []),
+            }), 400
+        return ok(result, status=201)
+    except ProjectError as exc:
+        return error("normalize_plan_error", str(exc), 400)
+
+
+@bp.post("/projects/<doc_id>/normalize/apply")
+def normalize_apply(doc_id: str):
+    payload = request.get_json(silent=True) or {}
+    try:
+        if not has_project(doc_id):
+            return error("missing_project", "Project not found", 404)
+        job = apply_normalized_document(
+            get_project_path(doc_id),
+            doc_id,
+            approved=bool(payload.get("approved")),
+            overwrite=bool(payload.get("overwrite")),
+            force=bool(payload.get("force")),
+            user=str(payload.get("user") or "local"),
+        )
+        return ok(job, status=201)
+    except ProjectError as exc:
+        message = str(exc)
+        if "annotations_present" in message:
+            code = "annotations_present"
+        elif "Confirm overwrite" in message or "Confirm" in message:
+            code = "confirm_overwrite_required"
+        else:
+            code = "normalize_apply_error"
         return error(code, str(exc), 400)
 
 
