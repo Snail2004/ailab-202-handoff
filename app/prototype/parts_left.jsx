@@ -90,7 +90,8 @@ function FilterChips({ active, onToggle, counts }) {
 function BlockRow({ block, reviewed, hasAnno, selected, onSelect }) {
   const flagged = (block.quality_flags || []).some(f => f !== "ok");
   return (
-    <button className={"blockrow" + (selected ? " sel" : "")} onClick={() => onSelect(block.block_id)}>
+    <button className={"blockrow" + (selected ? " sel" : "")} onClick={() => onSelect(block.block_id)}
+      title={block.block_id} aria-label={`Open block ${block.block_id}`}>
       <span className={"br-check" + (reviewed ? " on" : "")}>
         {reviewed ? <Ic.checkSmall size={11} /> : null}
       </span>

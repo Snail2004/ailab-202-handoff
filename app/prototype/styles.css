@@ -88,7 +88,7 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 .workspace {
   flex: 1;
   display: grid;
-  grid-template-columns: 280px minmax(0,1fr) 372px;
+  grid-template-columns: clamp(280px, 18vw, 340px) minmax(0,1fr) 372px;
   min-height: 0;
   min-width: 1080px;
 }
@@ -271,7 +271,10 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 .ch-prog { margin-left: auto; font-size: 10.5px; color: var(--ink-4); }
 
 .blockrow {
-  width: 100%; display: flex; align-items: center; gap: 7px;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) max-content repeat(3, max-content);
+  align-items: center;
+  gap: 7px;
   height: var(--row-h); padding: 0 7px 0 8px; margin-left: 4px; width: calc(100% - 4px);
   border: 0; background: none; border-radius: var(--r-sm); font-size: 12px; text-align: left;
   border-left: 2px solid transparent;
@@ -281,8 +284,8 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 .blockrow.sel .br-id { color: var(--accent-ink); }
 .br-check { width: 14px; height: 14px; border-radius: 3px; border: 1.4px solid var(--border-2); display: grid; place-items: center; flex: 0 0 auto; color: #fff; }
 .br-check.on { background: var(--green); border-color: var(--green); }
-.br-id { font-size: 11px; color: var(--ink-3); flex: 0 0 auto; }
-.br-spacer { flex: 1; }
+.br-id { font-size: 11px; color: var(--ink-3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.br-spacer { display: none; }
 .br-anno, .br-flag, .br-open { display: inline-flex; flex: 0 0 auto; }
 .br-anno { color: var(--amber); }
 .br-flag { color: var(--red); }
