@@ -31,7 +31,7 @@ def _history(project_path, *, action: str, label: str, target: dict, user: str, 
 
 def _handle(exc: Exception):
     if isinstance(exc, MutationError):
-        return error(exc.code, str(exc), exc.status)
+        return error(exc.code, str(exc), exc.status, **getattr(exc, "details", {}))
     if isinstance(exc, ProjectError):
         return error("project_error", str(exc), 400)
     raise exc

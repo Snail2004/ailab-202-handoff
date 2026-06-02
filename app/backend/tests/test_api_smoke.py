@@ -60,6 +60,12 @@ class BackendApiSmokeTest(unittest.TestCase):
     def _project_root(self, doc_id: str) -> Path:
         return Path(self.tmp.name) / doc_id
 
+    def _assert_project_valid(self, doc_id: str) -> None:
+        validate = self.client.post(f"/api/projects/{doc_id}/validate")
+        self.assertEqual(validate.status_code, 200)
+        payload = validate.get_json()
+        self.assertTrue(payload["data"]["ok"], payload["data"].get("errors"))
+
     def _extraction_report(self, doc_id: str) -> dict:
         return json.loads((self._project_root(doc_id) / "working" / "extraction_report.json").read_text(encoding="utf-8"))
 
@@ -379,6 +385,75 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.get_json()["errors"][0]["code"], "locked_term")
 
+    def test_delete_glossary_cascades_own_occurrence_and_undo_restores(self):
+        doc_id = "glossary_delete_cascade"
+        dataset = self._make_txt_project(doc_id)
+        block = next(item for item in dataset["blocks"] if "Alice" in item["clean_text"])
+        start = block["clean_text"].index("Alice")
+        created = self.client.post(f"/api/projects/{doc_id}/glossary/from-selection", json={
+            "block_id": block["block_id"],
+            "start": start,
+            "end": start + len("Alice"),
+            "source_term": "Alice",
+            "expected_target": "Alice",
+            "user": "tester",
+        })
+        self.assertEqual(created.status_code, 201)
+        term_id = created.get_json()["data"]["term_id"]
+
+        deleted = self.client.delete(f"/api/projects/{doc_id}/glossary/{term_id}", json={"user": "tester"})
+        self.assertEqual(deleted.status_code, 200)
+        self.assertEqual(deleted.get_json()["data"]["removed_occurrences"], 1)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertFalse(any(row["term_id"] == term_id for row in dataset["glossary"]))
+        clean_block = next(item for item in dataset["blocks"] if item["block_id"] == block["block_id"])
+        self.assertNotIn(term_id, (clean_block.get("annotations") or {}).get("term_occurrences", []))
+        self._assert_project_valid(doc_id)
+
+        undo = self.client.post(f"/api/projects/{doc_id}/undo", json={"user": "tester"})
+        self.assertEqual(undo.status_code, 200)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertTrue(any(row["term_id"] == term_id for row in dataset["glossary"]))
+        restored = next(item for item in dataset["blocks"] if item["block_id"] == block["block_id"])
+        self.assertIn(term_id, (restored.get("annotations") or {}).get("term_occurrences", []))
+        self._assert_project_valid(doc_id)
+
+    def test_delete_glossary_cascades_multiple_block_refs(self):
+        doc_id = "glossary_delete_multi"
+        dataset = self._make_txt_project(doc_id, b"Chapter 1\n\nAlice arrived.\n\nAlice waited.")
+        blocks = [item for item in dataset["blocks"] if "Alice" in item["clean_text"]]
+        self.assertGreaterEqual(len(blocks), 2)
+        term_id = "g_multi"
+        occurrences = []
+        document_path = self._project_root(doc_id) / "canonical" / "document.json"
+        document = json.loads(document_path.read_text(encoding="utf-8"))
+        for block in blocks[:2]:
+            span = [block["clean_text"].index("Alice"), block["clean_text"].index("Alice") + len("Alice")]
+            occurrences.append({"block_id": block["block_id"], "span": span})
+            for chapter in document["chapters"]:
+                for doc_block in chapter["blocks"]:
+                    if doc_block["block_id"] == block["block_id"]:
+                        doc_block.setdefault("annotations", {}).setdefault("term_occurrences", []).append(term_id)
+        document_path.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        glossary_path = self._project_root(doc_id) / "canonical" / "glossary.jsonl"
+        glossary_path.write_text(json.dumps({
+            "term_id": term_id,
+            "doc_id": doc_id,
+            "source_term": "Alice",
+            "expected_target": "Alice",
+            "status": "candidate",
+            "occurrences": occurrences,
+        }) + "\n", encoding="utf-8")
+
+        deleted = self.client.delete(f"/api/projects/{doc_id}/glossary/{term_id}", json={"user": "tester"})
+        self.assertEqual(deleted.status_code, 200)
+        self.assertEqual(deleted.get_json()["data"]["removed_occurrences"], 2)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertFalse(dataset["glossary"])
+        for block in dataset["blocks"]:
+            self.assertNotIn(term_id, (block.get("annotations") or {}).get("term_occurrences", []))
+        self._assert_project_valid(doc_id)
+
     def test_add_entity_from_selection_and_patch(self):
         block_id = "gold_demo_01_ch01_b007"
         text = "An old inscription on the dial marked the passage of time."
@@ -429,7 +504,7 @@ class BackendApiSmokeTest(unittest.TestCase):
         dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
         self.assertFalse(any(row["entity_id"] == "e_free" for row in dataset["entities"]))
 
-    def test_delete_entity_with_mentions_is_blocked(self):
+    def test_delete_entity_cascades_own_mentions_and_undo_restores(self):
         doc_id = "entity_delete_mentioned"
         dataset = self._make_txt_project(doc_id)
         block = next(item for item in dataset["blocks"] if "Alice" in item["clean_text"])
@@ -445,39 +520,83 @@ class BackendApiSmokeTest(unittest.TestCase):
         entity_id = response.get_json()["data"]["entity_id"]
 
         delete = self.client.delete(f"/api/projects/{doc_id}/entities/{entity_id}", json={"user": "tester"})
-        self.assertEqual(delete.status_code, 400)
-        self.assertEqual(delete.get_json()["errors"][0]["code"], "entity_has_mentions")
+        self.assertEqual(delete.status_code, 200)
+        self.assertEqual(delete.get_json()["data"]["removed_mentions"], 1)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertFalse(any(row["entity_id"] == entity_id for row in dataset["entities"]))
+        clean_block = next(item for item in dataset["blocks"] if item["block_id"] == block["block_id"])
+        self.assertNotIn(entity_id, (clean_block.get("annotations") or {}).get("entity_mentions", []))
+        self._assert_project_valid(doc_id)
+
+        undo = self.client.post(f"/api/projects/{doc_id}/undo", json={"user": "tester"})
+        self.assertEqual(undo.status_code, 200)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertTrue(any(row["entity_id"] == entity_id for row in dataset["entities"]))
+        restored = next(item for item in dataset["blocks"] if item["block_id"] == block["block_id"])
+        self.assertIn(entity_id, (restored.get("annotations") or {}).get("entity_mentions", []))
+        self._assert_project_valid(doc_id)
+
+    def test_delete_entity_in_discourse_is_blocked(self):
+        doc_id = "entity_delete_discourse_ref"
+        dataset = self._make_txt_project(doc_id)
+        block = next(item for item in dataset["blocks"] if "Alice" in item["clean_text"])
+        start = block["clean_text"].index("Alice")
+        created = self.client.post(f"/api/projects/{doc_id}/entities/from-selection", json={
+            "block_id": block["block_id"],
+            "start": start,
+            "end": start + len("Alice"),
+            "surface": "Alice",
+            "entity_type": "person",
+            "user": "tester",
+        })
+        self.assertEqual(created.status_code, 201)
+        entity_id = created.get_json()["data"]["entity_id"]
+        document_path = self._project_root(doc_id) / "canonical" / "document.json"
+        document = json.loads(document_path.read_text(encoding="utf-8"))
+        for chapter in document["chapters"]:
+            for doc_block in chapter["blocks"]:
+                if doc_block["block_id"] == block["block_id"]:
+                    doc_block["discourse"] = {"speaker_entity_id": entity_id}
+        document_path.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+        response = self.client.delete(f"/api/projects/{doc_id}/entities/{entity_id}", json={"user": "tester"})
+        self.assertEqual(response.status_code, 400)
+        error = response.get_json()["errors"][0]
+        self.assertEqual(error["code"], "entity_still_referenced")
+        self.assertEqual(error["references"][0]["block_id"], block["block_id"])
+        self._assert_project_valid(doc_id)
 
     def test_delete_entity_in_summary_is_blocked(self):
         doc_id = "entity_delete_summary_ref"
         dataset = self._make_txt_project(doc_id)
         chapter_id = dataset["chapters"][0]["chapter_id"]
-        entity_path = self._project_root(doc_id) / "canonical" / "entities.jsonl"
-        entity_path.write_text(json.dumps({
-            "entity_id": "e_summary",
-            "doc_id": doc_id,
-            "canonical_source": "Alice",
-            "canonical_target": "Alice",
+        block = next(item for item in dataset["blocks"] if "Alice" in item["clean_text"])
+        start = block["clean_text"].index("Alice")
+        created = self.client.post(f"/api/projects/{doc_id}/entities/from-selection", json={
+            "block_id": block["block_id"],
+            "start": start,
+            "end": start + len("Alice"),
+            "surface": "Alice",
             "entity_type": "person",
-            "aliases_source": [],
-            "aliases_target": [],
-            "pronoun_policy": "",
-            "mentions": [],
-            "annotated_by": "tester",
-            "confidence": 1.0,
-        }) + "\n", encoding="utf-8")
+            "user": "tester",
+        })
+        self.assertEqual(created.status_code, 201)
+        entity_id = created.get_json()["data"]["entity_id"]
         summary_path = self._project_root(doc_id) / "canonical" / "chapter_summaries.jsonl"
         summary_path.write_text(json.dumps({
             "doc_id": doc_id,
             "chapter_id": chapter_id,
             "summary_source": "Alice appears.",
             "source": "human",
-            "characters_present": ["e_summary"],
+            "characters_present": [entity_id],
         }) + "\n", encoding="utf-8")
 
-        response = self.client.delete(f"/api/projects/{doc_id}/entities/e_summary", json={"user": "tester"})
+        response = self.client.delete(f"/api/projects/{doc_id}/entities/{entity_id}", json={"user": "tester"})
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.get_json()["errors"][0]["code"], "entity_still_referenced")
+        error = response.get_json()["errors"][0]
+        self.assertEqual(error["code"], "entity_still_referenced")
+        self.assertEqual(error["references"][0]["chapter_id"], chapter_id)
+        self._assert_project_valid(doc_id)
 
     def test_patch_summary(self):
         response = self.client.patch("/api/projects/gold_demo_01/summary/gold_demo_01_ch01", json={

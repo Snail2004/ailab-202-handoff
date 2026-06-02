@@ -20,6 +20,16 @@ function errorMessage(err) {
   return first?.message || err?.message || "Request failed.";
 }
 
+function firstError(err) {
+  return err?.errors?.[0] || err?.payload?.errors?.[0] || {};
+}
+
+function describeExternalRef(ref) {
+  if (ref.block_id) return `${ref.kind || "ref"} · ${ref.block_id} · ${ref.field || ""}`;
+  if (ref.chapter_id) return `${ref.kind || "ref"} · ${ref.chapter_id} · ${ref.field || ""}`;
+  return `${ref.kind || "ref"} · ${ref.field || ""}`;
+}
+
 function normalizeErrors(report) {
   if (!report) return [];
   const errors = (report.errors || []).map(e => ({ severity: "error", ...e }));
@@ -700,17 +710,47 @@ function App() {
   }
 
   function deleteTerm(t) {
-    mutate(() => API.deleteGlossary(activeDocId, t.term_id, { user: currentUser() }), {
-      success: `Deleted term "${t.source_term}"`,
-      fail: "Cannot delete term",
-    });
+    setModal({ kind: "delete-term", term: t });
   }
 
   function deleteEntity(e) {
-    mutate(() => API.deleteEntity(activeDocId, e.entity_id, { user: currentUser() }), {
-      success: `Deleted entity "${e.canonical_source || e.entity_id}"`,
-      fail: "Cannot delete entity",
-    });
+    setModal({ kind: "delete-entity", entity: e });
+  }
+
+  async function confirmDeleteTerm() {
+    const term = modal?.term;
+    if (!term) return;
+    touchStart();
+    try {
+      const result = await API.deleteGlossary(activeDocId, term.term_id, { user: currentUser() });
+      await loadDataset(activeDocId, { silent: true });
+      touchDone();
+      setModal(null);
+      toast(`Deleted term "${term.source_term}"`, "good", `${result.removed_occurrences || 0} occurrence(s) removed`);
+    } catch (err) {
+      touchDone();
+      const first = firstError(err);
+      setModal({ kind: "delete-blocked", title: "Cannot delete term", message: errorMessage(err), references: first.references || [] });
+      toast("Cannot delete term", "bad", errorMessage(err));
+    }
+  }
+
+  async function confirmDeleteEntity() {
+    const entity = modal?.entity;
+    if (!entity) return;
+    touchStart();
+    try {
+      const result = await API.deleteEntity(activeDocId, entity.entity_id, { user: currentUser() });
+      await loadDataset(activeDocId, { silent: true });
+      touchDone();
+      setModal(null);
+      toast(`Deleted entity "${entity.canonical_source || entity.entity_id}"`, "good", `${result.removed_mentions || 0} mention(s) removed`);
+    } catch (err) {
+      touchDone();
+      const first = firstError(err);
+      setModal({ kind: "delete-blocked", title: "Cannot delete entity", message: errorMessage(err), references: first.references || [] });
+      toast("Cannot delete entity", "bad", errorMessage(err));
+    }
   }
 
   async function runValidate() {
@@ -891,6 +931,54 @@ function App() {
               <div key={reason} className="fc-row bad"><Ic.xCircle size={13} />{reason}</div>
             )) : <div className="fc-row ok"><Ic.checkCircle size={13} />All freeze gates are clear.</div>}
           </div>
+        </Modal>
+      )}
+
+      {modal?.kind === "delete-term" && (() => {
+        const term = modal.term;
+        const locked = ["locked", "human_verified"].includes(term?.status);
+        const occCount = (term?.occurrences || []).length;
+        const blockCount = new Set((term?.occurrences || []).map(o => o.block_id)).size;
+        return (
+          <Modal title="Delete glossary term" icon={Ic.trash} tone="bad" onClose={() => setModal(null)}
+            actions={<><button className="btn" onClick={() => setModal(null)}>Cancel</button>
+              <button className="btn danger" disabled={locked} onClick={confirmDeleteTerm}>Delete term</button></>}>
+            {locked ? (
+              <p><b>{term.source_term}</b> is {term.status}. Unlock or downgrade it before deleting.</p>
+            ) : (
+              <>
+                <p>Delete <b>{term.source_term}</b> and remove its annotation footprint from the document?</p>
+                <p className="muted">{occCount} occurrence(s) across {blockCount || 0} block(s) will be removed. This is undoable.</p>
+              </>
+            )}
+          </Modal>
+        );
+      })()}
+
+      {modal?.kind === "delete-entity" && (() => {
+        const entity = modal.entity;
+        const mentionCount = (entity?.mentions || []).length;
+        const blockCount = new Set((entity?.mentions || []).map(m => m.block_id)).size;
+        return (
+          <Modal title="Delete entity" icon={Ic.trash} tone="bad" onClose={() => setModal(null)}
+            actions={<><button className="btn" onClick={() => setModal(null)}>Cancel</button>
+              <button className="btn danger" onClick={confirmDeleteEntity}>Delete entity</button></>}>
+            <p>Delete <b>{entity.canonical_source || entity.entity_id}</b> and remove its own mention footprint from the document?</p>
+            <p className="muted">{mentionCount} mention(s) across {blockCount || 0} block(s) will be removed. This is undoable.</p>
+            <p className="muted">If this entity is used by discourse or chapter summary, deletion will be blocked and those references must be removed first.</p>
+          </Modal>
+        );
+      })()}
+
+      {modal?.kind === "delete-blocked" && (
+        <Modal title={modal.title || "Delete blocked"} icon={Ic.alert} tone="bad" onClose={() => setModal(null)}
+          actions={<button className="btn" onClick={() => setModal(null)}>Close</button>}>
+          <p>{modal.message || "This item is still referenced."}</p>
+          {(modal.references || []).length ? (
+            <ul className="file-list">
+              {modal.references.map((ref, index) => <li key={index}><Ic.link size={12} /><span className="mono">{describeExternalRef(ref)}</span></li>)}
+            </ul>
+          ) : <p className="muted">Remove related references first, then try again.</p>}
         </Modal>
       )}
     </div>

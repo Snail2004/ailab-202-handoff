@@ -15,10 +15,11 @@ from services.dataset_io import (
 
 
 class MutationError(ValueError):
-    def __init__(self, code: str, message: str, status: int = 400):
+    def __init__(self, code: str, message: str, status: int = 400, **details: Any):
         super().__init__(message)
         self.code = code
         self.status = status
+        self.details = details
 
 
 EDITABLE_METADATA = {
@@ -305,19 +306,33 @@ def delete_glossary(project_path: Path, term_id: str, user: str = "local") -> di
     target = next((row for row in rows if row.get("term_id") == term_id), None)
     if target is None:
         raise MutationError("missing_term", f"Term not found: {term_id}", 404)
-    if target.get("status") == "locked":
-        raise MutationError("locked_term", "Locked terms cannot be deleted.")
+    if target.get("status") in {"locked", "human_verified"}:
+        raise MutationError("locked_term", "Locked or human-verified terms cannot be deleted.")
+
+    removed_block_refs = 0
     for chapter in document.get("chapters", []):
         for block in chapter.get("blocks", []):
             refs = (block.get("annotations") or {}).get("term_occurrences", [])
             if term_id in refs:
-                raise MutationError("term_still_referenced", "Term is still referenced by a block.")
-    if target.get("occurrences"):
-        raise MutationError("term_has_occurrences", "Term still has occurrences.")
+                kept_refs = [ref for ref in refs if ref != term_id]
+                removed_block_refs += len(refs) - len(kept_refs)
+                block.setdefault("annotations", {})["term_occurrences"] = kept_refs
+
     kept = [row for row in rows if row.get("term_id") != term_id]
     write_jsonl_atomic(_jsonl_path(project_path, "glossary"), kept)
-    log_event(project_path, "delete_glossary", {"term_id": term_id}, user)
-    return {"term_id": term_id, "deleted": True}
+    _write_document(project_path, document)
+    removed_occurrences = len(target.get("occurrences") or [])
+    log_event(project_path, "delete_glossary", {
+        "term_id": term_id,
+        "removed_occurrences": removed_occurrences,
+        "removed_block_refs": removed_block_refs,
+    }, user)
+    return {
+        "term_id": term_id,
+        "deleted": True,
+        "removed_occurrences": removed_occurrences,
+        "removed_block_refs": removed_block_refs,
+    }
 
 
 def add_entity_from_selection(project_path: Path, payload: dict[str, Any], user: str = "local") -> dict[str, Any]:
@@ -383,27 +398,52 @@ def delete_entity(project_path: Path, entity_id: str, user: str = "local") -> di
     target = next((row for row in rows if row.get("entity_id") == entity_id), None)
     if target is None:
         raise MutationError("missing_entity", f"Entity not found: {entity_id}", 404)
-    if target.get("mentions"):
-        raise MutationError("entity_has_mentions", "Entity still has mentions.")
 
+    external_refs: list[dict[str, Any]] = []
     for chapter in document.get("chapters", []):
         for block in chapter.get("blocks", []):
-            annotations = block.get("annotations") or {}
-            if entity_id in annotations.get("entity_mentions", []):
-                raise MutationError("entity_still_referenced", "Entity is still referenced by a block.")
             discourse = block.get("discourse") or {}
-            if entity_id in (discourse.get("speaker_entity_id"), discourse.get("addressee_entity_id")):
-                raise MutationError("entity_still_referenced", "Entity is still referenced by block discourse.")
+            if discourse.get("speaker_entity_id") == entity_id:
+                external_refs.append({"kind": "discourse", "block_id": block.get("block_id"), "field": "speaker_entity_id"})
+            if discourse.get("addressee_entity_id") == entity_id:
+                external_refs.append({"kind": "discourse", "block_id": block.get("block_id"), "field": "addressee_entity_id"})
 
     summaries = read_jsonl(_jsonl_path(project_path, "chapter_summaries"))
     for row in summaries:
         if entity_id in row.get("characters_present", []):
-            raise MutationError("entity_still_referenced", "Entity is still referenced by a chapter summary.")
+            external_refs.append({"kind": "summary", "chapter_id": row.get("chapter_id"), "field": "characters_present"})
+
+    if external_refs:
+        raise MutationError(
+            "entity_still_referenced",
+            "Entity is referenced by discourse or chapter summary. Remove those references first.",
+            references=external_refs,
+        )
+
+    removed_block_refs = 0
+    for chapter in document.get("chapters", []):
+        for block in chapter.get("blocks", []):
+            refs = (block.get("annotations") or {}).get("entity_mentions", [])
+            if entity_id in refs:
+                kept_refs = [ref for ref in refs if ref != entity_id]
+                removed_block_refs += len(refs) - len(kept_refs)
+                block.setdefault("annotations", {})["entity_mentions"] = kept_refs
 
     kept = [row for row in rows if row.get("entity_id") != entity_id]
     write_jsonl_atomic(_jsonl_path(project_path, "entities"), kept)
-    log_event(project_path, "delete_entity", {"entity_id": entity_id}, user)
-    return {"entity_id": entity_id, "deleted": True}
+    _write_document(project_path, document)
+    removed_mentions = len(target.get("mentions") or [])
+    log_event(project_path, "delete_entity", {
+        "entity_id": entity_id,
+        "removed_mentions": removed_mentions,
+        "removed_block_refs": removed_block_refs,
+    }, user)
+    return {
+        "entity_id": entity_id,
+        "deleted": True,
+        "removed_mentions": removed_mentions,
+        "removed_block_refs": removed_block_refs,
+    }
 
 
 def patch_summary(project_path: Path, chapter_id: str, payload: dict[str, Any], user: str = "local") -> dict[str, Any]:
