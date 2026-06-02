@@ -105,7 +105,7 @@ function GlossaryTab({ terms, onDeleteTerm, onUpdateTerm }) {
 }
 
 /* ---------- ENTITIES ---------- */
-function EntitiesTab({ entities, allEntities, block, onUpdateEntity, onUpdateDiscourse }) {
+function EntitiesTab({ entities, allEntities, block, onUpdateEntity, onUpdateDiscourse, onDeleteEntity }) {
   const [expanded, setExpanded] = React.useState(entities[0]?.entity_id);
   React.useEffect(() => {
     if (entities.length && !entities.some(e => e.entity_id === expanded)) setExpanded(entities[0].entity_id);
@@ -167,6 +167,12 @@ function EntitiesTab({ entities, allEntities, block, onUpdateEntity, onUpdateDis
                     {mentions.map((m, i) => <span key={i} className="var mono">"{m.surface}" [{m.span[0]},{m.span[1]}]</span>)}
                   </MiniField>
                 )}
+                <div className="card-meta-row">
+                  <span className="lockfield"><span className="lf-k">type</span><span className="lf-v">{e.entity_type || "-"}</span></span>
+                  <span className="lockfield"><span className="lf-k">conf</span><span className="lf-v">{Number(e.confidence || 0).toFixed(2)}</span></span>
+                  <span className="lockfield"><span className="lf-k">mentions</span><span className="lf-v">{(e.mentions || []).length}</span></span>
+                  <button className="card-del tip tip-left" data-tip="Delete entity" onClick={() => onDeleteEntity(e)}><Ic.trash size={12} /></button>
+                </div>
               </div>
             )}
           </div>
@@ -439,7 +445,7 @@ function RightPanel({ active, onSetActive, counts, ctx }) {
               {open && (
                 <div className="rp-content">
                   {t.id === "glossary" && <GlossaryTab terms={ctx.terms} onDeleteTerm={ctx.onDeleteTerm} onUpdateTerm={ctx.onUpdateTerm} />}
-                  {t.id === "entities" && <EntitiesTab entities={ctx.entities} allEntities={ctx.allEntities} block={ctx.block} onUpdateEntity={ctx.onUpdateEntity} onUpdateDiscourse={ctx.onUpdateDiscourse} />}
+                  {t.id === "entities" && <EntitiesTab entities={ctx.entities} allEntities={ctx.allEntities} block={ctx.block} onUpdateEntity={ctx.onUpdateEntity} onUpdateDiscourse={ctx.onUpdateDiscourse} onDeleteEntity={ctx.onDeleteEntity} />}
                   {t.id === "summary" && <SummaryTab summary={ctx.summary} entities={ctx.allEntities} onUpdateSummary={ctx.onUpdateSummary} />}
                   {t.id === "reference" && <ReferenceTab refs={ctx.references} block={ctx.block} onUpdateReference={ctx.onUpdateReference} onCreateReference={ctx.onCreateReference} onSaveDraft={ctx.onSaveDraft} onMarkReviewed={ctx.onMarkReviewedReference} onLockReference={ctx.onLockReference} />}
                   {t.id === "validate" && <ValidateTab errors={ctx.errors} onJump={ctx.onJump} />}

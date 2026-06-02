@@ -6,6 +6,7 @@ from services.mutations import (
     MutationError,
     add_entity_from_selection,
     add_glossary_from_selection,
+    delete_entity,
     delete_glossary,
     patch_block,
     patch_block_review,
@@ -196,6 +197,24 @@ def update_entity(doc_id: str, entity_id: str):
             target={"doc_id": doc_id, "entity_id": entity_id, "fields": fields},
             user=user,
             operation=lambda: patch_entity(project_path, entity_id, payload, user),
+        ))
+    except Exception as exc:
+        return _handle(exc)
+
+
+@bp.delete("/projects/<doc_id>/entities/<entity_id>")
+def remove_entity(doc_id: str, entity_id: str):
+    payload = _payload()
+    try:
+        project_path = _project(doc_id)
+        user = _user(payload)
+        return ok(_history(
+            project_path,
+            action="delete_entity",
+            label=f"Delete entity {entity_id}",
+            target={"doc_id": doc_id, "entity_id": entity_id},
+            user=user,
+            operation=lambda: delete_entity(project_path, entity_id, user),
         ))
     except Exception as exc:
         return _handle(exc)

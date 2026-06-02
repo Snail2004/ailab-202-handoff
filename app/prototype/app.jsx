@@ -706,6 +706,13 @@ function App() {
     });
   }
 
+  function deleteEntity(e) {
+    mutate(() => API.deleteEntity(activeDocId, e.entity_id, { user: currentUser() }), {
+      success: `Deleted entity "${e.canonical_source || e.entity_id}"`,
+      fail: "Cannot delete entity",
+    });
+  }
+
   async function runValidate() {
     setRightActive("validate");
     try {
@@ -848,13 +855,13 @@ function App() {
           filters={filters} onToggleFilter={toggleFilter} counts={filterCounts} total={blocks.length}
           errors={errors}
           onOpenProjectSource={() => setView("project")} />
-        <CenterEditor block={block} reviewed={!!review.blocks?.[selectedId]?.reviewed} spans={spans}
+        <CenterEditor block={block} docInfo={docInfo} reviewed={!!review.blocks?.[selectedId]?.reviewed} spans={spans}
           editing={editing} onEdit={() => setEditing(true)} onCommitClean={commitClean} onCancelEdit={() => setEditing(false)}
           onChangeType={changeType} onToggleOpening={toggleOpening} onToggleFlag={toggleFlag} onMarkReviewed={markReviewed}
           onAddGlossary={addGlossary} onAddEntity={addEntity} />
         <RightPanel active={rightActive} onSetActive={setRightActive} counts={rpCounts}
           ctx={{ terms: blockTerms, entities: blockEntities, allEntities: entities, block, summary, references, errors, stats, freezeReasons,
-            onDeleteTerm: deleteTerm, onUpdateTerm: updateTerm, onUpdateEntity: updateEntity, onUpdateSummary: updateSummary,
+            onDeleteTerm: deleteTerm, onDeleteEntity: deleteEntity, onUpdateTerm: updateTerm, onUpdateEntity: updateEntity, onUpdateSummary: updateSummary,
             onUpdateReference: updateReference, onCreateReference: createReferenceDraft, onSaveDraft: saveDraft, onMarkReviewedReference: markReviewedReference,
             onLockReference: lockReference, onUpdateDiscourse: updateDiscourse, onJump: jumpTo, history: historyState }} />
       </div>

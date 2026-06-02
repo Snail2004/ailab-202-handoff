@@ -405,6 +405,80 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertEqual(patch.status_code, 200)
         self.assertEqual(patch.get_json()["data"]["aliases_target"], ["dòng chữ khắc"])
 
+    def test_delete_unreferenced_entity(self):
+        doc_id = "entity_delete_free"
+        self._make_txt_project(doc_id)
+        entity_path = self._project_root(doc_id) / "canonical" / "entities.jsonl"
+        entity_path.write_text(json.dumps({
+            "entity_id": "e_free",
+            "doc_id": doc_id,
+            "canonical_source": "Free Entity",
+            "canonical_target": "Free Entity",
+            "entity_type": "concept",
+            "aliases_source": [],
+            "aliases_target": [],
+            "pronoun_policy": "",
+            "mentions": [],
+            "annotated_by": "tester",
+            "confidence": 1.0,
+        }) + "\n", encoding="utf-8")
+
+        response = self.client.delete(f"/api/projects/{doc_id}/entities/e_free", json={"user": "tester"})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["data"]["deleted"])
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertFalse(any(row["entity_id"] == "e_free" for row in dataset["entities"]))
+
+    def test_delete_entity_with_mentions_is_blocked(self):
+        doc_id = "entity_delete_mentioned"
+        dataset = self._make_txt_project(doc_id)
+        block = next(item for item in dataset["blocks"] if "Alice" in item["clean_text"])
+        start = block["clean_text"].index("Alice")
+        response = self.client.post(f"/api/projects/{doc_id}/entities/from-selection", json={
+            "block_id": block["block_id"],
+            "start": start,
+            "end": start + len("Alice"),
+            "surface": "Alice",
+            "user": "tester",
+        })
+        self.assertEqual(response.status_code, 201)
+        entity_id = response.get_json()["data"]["entity_id"]
+
+        delete = self.client.delete(f"/api/projects/{doc_id}/entities/{entity_id}", json={"user": "tester"})
+        self.assertEqual(delete.status_code, 400)
+        self.assertEqual(delete.get_json()["errors"][0]["code"], "entity_has_mentions")
+
+    def test_delete_entity_in_summary_is_blocked(self):
+        doc_id = "entity_delete_summary_ref"
+        dataset = self._make_txt_project(doc_id)
+        chapter_id = dataset["chapters"][0]["chapter_id"]
+        entity_path = self._project_root(doc_id) / "canonical" / "entities.jsonl"
+        entity_path.write_text(json.dumps({
+            "entity_id": "e_summary",
+            "doc_id": doc_id,
+            "canonical_source": "Alice",
+            "canonical_target": "Alice",
+            "entity_type": "person",
+            "aliases_source": [],
+            "aliases_target": [],
+            "pronoun_policy": "",
+            "mentions": [],
+            "annotated_by": "tester",
+            "confidence": 1.0,
+        }) + "\n", encoding="utf-8")
+        summary_path = self._project_root(doc_id) / "canonical" / "chapter_summaries.jsonl"
+        summary_path.write_text(json.dumps({
+            "doc_id": doc_id,
+            "chapter_id": chapter_id,
+            "summary_source": "Alice appears.",
+            "source": "human",
+            "characters_present": ["e_summary"],
+        }) + "\n", encoding="utf-8")
+
+        response = self.client.delete(f"/api/projects/{doc_id}/entities/e_summary", json={"user": "tester"})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["errors"][0]["code"], "entity_still_referenced")
+
     def test_patch_summary(self):
         response = self.client.patch("/api/projects/gold_demo_01/summary/gold_demo_01_ch01", json={
             "summary_source": "Mira wakes before the Turning and asks about the slow dawn.",

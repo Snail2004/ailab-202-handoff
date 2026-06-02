@@ -99,12 +99,14 @@ function EditorToolbar({ block, reviewed, onChangeType, onToggleOpening, onToggl
   );
 }
 
-function MetaBar({ block }) {
+function MetaBar({ block, docInfo }) {
+  const schemaVersion = docInfo?.schema_version ? `schema ${docInfo.schema_version}` : "";
+  const pipelineVersion = docInfo?.metadata?.pipeline_version ? `pipeline ${docInfo.metadata.pipeline_version}` : "";
   const items = [
     ["block_id", block.block_id],
     ["chapter_id", block.chapter_id],
     ["order_index", String(block.order_index)],
-    ["provenance", "pipeline 1.4.0"],
+    ["provenance", [schemaVersion, pipelineVersion].filter(Boolean).join(" / ") || "extracted"],
   ];
   return (
     <div className="metabar">
@@ -138,7 +140,7 @@ function SelectionPopover({ rect, onGlossary, onEntity, onClose }) {
 }
 
 function CenterEditor({
-  block, reviewed, spans, editing, onEdit, onCommitClean, onCancelEdit,
+  block, docInfo, reviewed, spans, editing, onEdit, onCommitClean, onCancelEdit,
   onChangeType, onToggleOpening, onToggleFlag, onMarkReviewed,
   onAddGlossary, onAddEntity,
 }) {
@@ -174,7 +176,7 @@ function CenterEditor({
       <EditorToolbar block={block} reviewed={reviewed}
         onChangeType={onChangeType} onToggleOpening={onToggleOpening}
         onToggleFlag={onToggleFlag} onMarkReviewed={onMarkReviewed} />
-      <MetaBar block={block} />
+      <MetaBar block={block} docInfo={docInfo} />
       <div className="ed-scroll" onMouseDown={() => sel && setSel(null)}>
         <div className="ed-inner">
           {/* SOURCE EN — read only */}

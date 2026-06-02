@@ -377,6 +377,35 @@ def patch_entity(project_path: Path, entity_id: str, payload: dict[str, Any], us
     raise MutationError("missing_entity", f"Entity not found: {entity_id}", 404)
 
 
+def delete_entity(project_path: Path, entity_id: str, user: str = "local") -> dict[str, Any]:
+    document = _read_document(project_path)
+    rows = read_jsonl(_jsonl_path(project_path, "entities"))
+    target = next((row for row in rows if row.get("entity_id") == entity_id), None)
+    if target is None:
+        raise MutationError("missing_entity", f"Entity not found: {entity_id}", 404)
+    if target.get("mentions"):
+        raise MutationError("entity_has_mentions", "Entity still has mentions.")
+
+    for chapter in document.get("chapters", []):
+        for block in chapter.get("blocks", []):
+            annotations = block.get("annotations") or {}
+            if entity_id in annotations.get("entity_mentions", []):
+                raise MutationError("entity_still_referenced", "Entity is still referenced by a block.")
+            discourse = block.get("discourse") or {}
+            if entity_id in (discourse.get("speaker_entity_id"), discourse.get("addressee_entity_id")):
+                raise MutationError("entity_still_referenced", "Entity is still referenced by block discourse.")
+
+    summaries = read_jsonl(_jsonl_path(project_path, "chapter_summaries"))
+    for row in summaries:
+        if entity_id in row.get("characters_present", []):
+            raise MutationError("entity_still_referenced", "Entity is still referenced by a chapter summary.")
+
+    kept = [row for row in rows if row.get("entity_id") != entity_id]
+    write_jsonl_atomic(_jsonl_path(project_path, "entities"), kept)
+    log_event(project_path, "delete_entity", {"entity_id": entity_id}, user)
+    return {"entity_id": entity_id, "deleted": True}
+
+
 def patch_summary(project_path: Path, chapter_id: str, payload: dict[str, Any], user: str = "local") -> dict[str, Any]:
     _reject_unknown(payload, EDITABLE_SUMMARY)
     document = _read_document(project_path)

@@ -95,6 +95,7 @@
     deleteGlossary: (docId, termId, payload) => request(`/projects/${encodeURIComponent(docId)}/glossary/${encodeURIComponent(termId)}`, { method: "DELETE", body: payload || {} }),
     addEntity: (docId, payload) => request(`/projects/${encodeURIComponent(docId)}/entities/from-selection`, { method: "POST", body: payload }),
     patchEntity: (docId, entityId, payload) => request(`/projects/${encodeURIComponent(docId)}/entities/${encodeURIComponent(entityId)}`, { method: "PATCH", body: payload }),
+    deleteEntity: (docId, entityId, payload) => request(`/projects/${encodeURIComponent(docId)}/entities/${encodeURIComponent(entityId)}`, { method: "DELETE", body: payload || {} }),
     patchSummary: (docId, chapterId, payload) => request(`/projects/${encodeURIComponent(docId)}/summary/${encodeURIComponent(chapterId)}`, { method: "PATCH", body: payload }),
     saveReferenceDraft: (docId, payload) => request(`/projects/${encodeURIComponent(docId)}/references/draft`, { method: "POST", body: payload }),
     reviewReference: (docId, referenceId, payload) => request(`/projects/${encodeURIComponent(docId)}/references/${encodeURIComponent(referenceId)}/review`, { method: "POST", body: payload }),
