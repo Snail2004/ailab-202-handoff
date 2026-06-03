@@ -34,6 +34,7 @@ EDITABLE_METADATA = {
     "contamination_risk",
 }
 EDITABLE_BLOCK = {"clean_text", "block_type", "is_chapter_opening", "quality_flags", "discourse"}
+EDITABLE_BLOCK_NOTES = {"motifs", "tone", "implicit_meaning", "narrative_note"}
 EDITABLE_GLOSSARY = {
     "source_term",
     "expected_target",
@@ -290,6 +291,24 @@ def patch_block(project_path: Path, block_id: str, payload: dict[str, Any], user
         "stale_count": len(stale_spans),
     }, user)
     return {"block": block, "stale_spans": stale_spans, "relocated_count": relocated_count}
+
+
+def patch_block_notes(project_path: Path, block_id: str, payload: dict[str, Any], user: str = "local") -> dict[str, Any]:
+    _reject_unknown(payload, EDITABLE_BLOCK_NOTES)
+    document = _read_document(project_path)
+    _, block = _find_block(document, block_id)
+    annotations = block.setdefault("annotations", {})
+    for key in EDITABLE_BLOCK_NOTES:
+        if key not in payload:
+            continue
+        value = payload[key]
+        if key == "motifs":
+            annotations[key] = value if isinstance(value, list) else []
+        else:
+            annotations[key] = value if value is not None else None
+    _write_document(project_path, document)
+    log_event(project_path, "patch_block_notes", {"block_id": block_id, "fields": sorted(set(payload) & EDITABLE_BLOCK_NOTES)}, user)
+    return {"block": block}
 
 
 def patch_block_review(project_path: Path, block_id: str, payload: dict[str, Any], user: str = "local") -> dict[str, Any]:

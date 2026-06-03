@@ -768,6 +768,18 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 .form-field input:disabled, .form-field textarea:disabled, .form-field select:disabled {
   background: var(--panel-2); color: var(--ink-3); cursor: not-allowed;
 }
+.entity-pick {
+  display: flex; flex-direction: column; gap: 5px;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--panel-2); padding: 8px;
+}
+.check-row {
+  display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: center; gap: 7px;
+  min-height: 24px; padding: 3px 4px; border-radius: 5px;
+  font-size: 12px; color: var(--ink-2);
+}
+.check-row:hover { background: var(--panel); }
+.check-row input { width: 13px; height: 13px; margin: 0; }
 .ref-textarea {
   width: 100%; font-size: 13.5px; line-height: 1.65; color: var(--ink);
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-sm);

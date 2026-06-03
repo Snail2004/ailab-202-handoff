@@ -559,6 +559,7 @@ function App() {
     glossary: { text: blockTerms.length || null },
     entities: { text: blockEntities.length || null },
     summary: { text: summary?.summary_source ? null : "empty", tone: summary?.summary_source ? "" : "warn" },
+    notes: { text: block?.annotations && (block.annotations.implicit_meaning || block.annotations.narrative_note || block.annotations.tone || (block.annotations.motifs || []).length) ? "set" : null },
     reference: { text: refForBlock?.status || null, tone: refForBlock?.status === "draft" ? "warn" : "" },
     validate: { text: errorCount || null, tone: errorCount ? "bad" : "" },
     progress: { text: `${stats.reviewed}/${stats.totalBlocks}` },
@@ -970,6 +971,16 @@ function App() {
     });
     queueSave(`summary:${chapterId}:${Object.keys(patch).join(",")}`, () => API.patchSummary(activeDocId, chapterId, { ...patch, user: currentUser() }));
   }
+  function updateBlockNotes(blockId, patch) {
+    const target = findBlock(blockId);
+    if (!target) return;
+    setSelectedId(target.block_id);
+    setBlocks(bs => bs.map(b => b.block_id === target.block_id ? {
+      ...b,
+      annotations: { ...(b.annotations || {}), ...patch },
+    } : b));
+    queueSave(`block-notes:${blockId}:${Object.keys(patch).join(",")}`, () => API.patchBlockNotes(activeDocId, blockId, { ...patch, user: currentUser() }));
+  }
   function updateReference(referenceId, patch) {
     setReferences(rs => rs.map(r => r.reference_id === referenceId ? { ...r, ...patch, canonical: false } : r));
   }
@@ -1226,6 +1237,7 @@ function App() {
         <RightPanel openTabs={rightOpenTabs} onToggleTab={toggleRightTab} counts={rpCounts}
           ctx={{ terms: blockTerms, entities: blockEntities, allEntities: entities, block, summary, references, errors, stats, freezeReasons,
             onDeleteTerm: deleteTerm, onDeleteEntity: deleteEntity, onUpdateTerm: updateTerm, onUpdateEntity: updateEntity, onUpdateSummary: updateSummary,
+            onUpdateBlockNotes: updateBlockNotes,
             onUpdateReference: updateReference, onCreateReference: createReferenceDraft, onSaveDraft: saveDraft, onMarkReviewedReference: markReviewedReference,
             onLockReference: lockReference, onUpdateDiscourse: updateDiscourse, onJump: jumpTo, history: historyState }} />
       </div>

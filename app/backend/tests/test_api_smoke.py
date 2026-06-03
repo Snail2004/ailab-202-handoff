@@ -1279,10 +1279,57 @@ class BackendApiSmokeTest(unittest.TestCase):
         response = self.client.patch("/api/projects/gold_demo_01/summary/gold_demo_01_ch01", json={
             "summary_source": "Mira wakes before the Turning and asks about the slow dawn.",
             "source": "human",
+            "key_events": ["Mira wakes before the Turning."],
+            "motifs": ["slow dawn"],
+            "summary_target": "Mira thuc day truoc buoi Chuyen Minh.",
+            "open_threads": ["Why the dawn is slow."],
+            "translation_notes": "Keep Turning consistent.",
+            "confidence": 0.81,
             "user": "tester",
         })
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json()["data"]["source"], "human")
+        data = response.get_json()["data"]
+        self.assertEqual(data["source"], "human")
+        self.assertEqual(data["key_events"], ["Mira wakes before the Turning."])
+        self.assertEqual(data["motifs"], ["slow dawn"])
+        self.assertEqual(data["summary_target"], "Mira thuc day truoc buoi Chuyen Minh.")
+        self.assertEqual(data["open_threads"], ["Why the dawn is slow."])
+        self.assertEqual(data["translation_notes"], "Keep Turning consistent.")
+        self.assertEqual(data["confidence"], 0.81)
+
+    def test_patch_block_notes_only_updates_soft_annotations(self):
+        doc_id = "block_notes"
+        dataset = self._make_txt_project(doc_id)
+        block = next(item for item in dataset["blocks"] if item["block_type"] != "heading")
+
+        response = self.client.patch(f"/api/projects/{doc_id}/blocks/{block['block_id']}/notes", json={
+            "motifs": ["arrival"],
+            "tone": "quiet",
+            "implicit_meaning": "Alice entering changes the scene.",
+            "narrative_note": "Use as a lightweight interpretive note.",
+            "user": "tester",
+        })
+        self.assertEqual(response.status_code, 200)
+        annotations = response.get_json()["data"]["block"]["annotations"]
+        self.assertEqual(annotations["motifs"], ["arrival"])
+        self.assertEqual(annotations["tone"], "quiet")
+        self.assertEqual(annotations["implicit_meaning"], "Alice entering changes the scene.")
+        self.assertEqual(annotations["narrative_note"], "Use as a lightweight interpretive note.")
+        self.assertEqual(annotations.get("term_occurrences", []), [])
+        self.assertEqual(annotations.get("entity_mentions", []), [])
+        self._assert_project_valid(doc_id)
+
+    def test_patch_block_notes_rejects_hard_annotation_pointers(self):
+        doc_id = "block_notes_guard"
+        dataset = self._make_txt_project(doc_id)
+        block = next(item for item in dataset["blocks"] if item["block_type"] != "heading")
+
+        response = self.client.patch(f"/api/projects/{doc_id}/blocks/{block['block_id']}/notes", json={
+            "entity_mentions": ["e_999"],
+            "user": "tester",
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["errors"][0]["code"], "read_only_or_unknown_field")
 
     def test_project_upload_extract_job_and_validate(self):
         doc_id = "phase3_txt"

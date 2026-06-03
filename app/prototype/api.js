@@ -97,6 +97,7 @@
     validate: (docId, payload) => request(`/projects/${encodeURIComponent(docId)}/validate`, { method: "POST", body: payload || {} }),
     patchMetadata: (docId, payload) => request(`/projects/${encodeURIComponent(docId)}/metadata`, { method: "PATCH", body: payload }),
     patchBlock: (docId, blockId, payload) => request(`/projects/${encodeURIComponent(docId)}/blocks/${encodeURIComponent(blockId)}`, { method: "PATCH", body: payload }),
+    patchBlockNotes: (docId, blockId, payload) => request(`/projects/${encodeURIComponent(docId)}/blocks/${encodeURIComponent(blockId)}/notes`, { method: "PATCH", body: payload }),
     patchReview: (docId, blockId, payload) => request(`/projects/${encodeURIComponent(docId)}/review/blocks/${encodeURIComponent(blockId)}`, { method: "PATCH", body: payload }),
     addGlossary: (docId, payload) => request(`/projects/${encodeURIComponent(docId)}/glossary/from-selection`, { method: "POST", body: payload }),
     patchGlossary: (docId, termId, payload) => request(`/projects/${encodeURIComponent(docId)}/glossary/${encodeURIComponent(termId)}`, { method: "PATCH", body: payload }),

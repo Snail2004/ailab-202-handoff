@@ -9,6 +9,7 @@ from services.mutations import (
     delete_entity,
     delete_glossary,
     patch_block,
+    patch_block_notes,
     patch_block_review,
     patch_entity,
     patch_glossary,
@@ -84,6 +85,25 @@ def update_block(doc_id: str, block_id: str):
             target={"doc_id": doc_id, "block_id": block_id, "fields": fields},
             user=user,
             operation=lambda: patch_block(project_path, block_id, payload, user),
+        ))
+    except Exception as exc:
+        return _handle(exc)
+
+
+@bp.patch("/projects/<doc_id>/blocks/<block_id>/notes")
+def update_block_notes(doc_id: str, block_id: str):
+    payload = _payload()
+    try:
+        project_path = _project(doc_id)
+        user = _user(payload)
+        fields = sorted(set(payload) & {"motifs", "tone", "implicit_meaning", "narrative_note"})
+        return ok(_history(
+            project_path,
+            action="patch_block_notes",
+            label=f"Edit narrative notes on {block_id}",
+            target={"doc_id": doc_id, "block_id": block_id, "fields": fields},
+            user=user,
+            operation=lambda: patch_block_notes(project_path, block_id, payload, user),
         ))
     except Exception as exc:
         return _handle(exc)

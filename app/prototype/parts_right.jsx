@@ -40,6 +40,20 @@ function arrayToCsv(value) {
   return (value || []).join(", ");
 }
 
+function linesToArray(value) {
+  return value.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+}
+
+function arrayToLines(value) {
+  return (value || []).join("\n");
+}
+
+function confidenceValue(value) {
+  if (value === "" || value == null) return "";
+  const n = Number(value);
+  return Number.isFinite(n) ? String(n) : "";
+}
+
 /* ---------- GLOSSARY ---------- */
 function GlossaryTab({ terms, onDeleteTerm, onUpdateTerm }) {
   const [expanded, setExpanded] = React.useState(terms[0]?.term_id);
@@ -227,13 +241,75 @@ function SummaryTab({ summary, entities, onUpdateSummary }) {
         <FormField label="setting">
           <input value={safe.setting || ""} onChange={e => onUpdateSummary(safe.chapter_id, { setting: e.target.value })} />
         </FormField>
+        <FormField label="confidence">
+          <input type="number" min="0" max="1" step="0.01" value={confidenceValue(safe.confidence)}
+            onChange={e => onUpdateSummary(safe.chapter_id, { confidence: e.target.value === "" ? 0 : Number(e.target.value) })} />
+        </FormField>
+        <FormField label="motifs">
+          <input value={arrayToCsv(safe.motifs)} onChange={e => onUpdateSummary(safe.chapter_id, { motifs: csvToArray(e.target.value) })} />
+        </FormField>
       </div>
-      <MiniField label="characters_present">
-        {(safe.characters_present || []).length ? safe.characters_present.map(id => {
-          const e = entities.find(x => x.entity_id === id);
-          return <span key={id} className="var mono">{e ? e.canonical_source : id}</span>;
-        }) : <span className="faint">none</span>}
-      </MiniField>
+      <FormField label="key_events">
+        <textarea rows={4} value={arrayToLines(safe.key_events)} onChange={e => onUpdateSummary(safe.chapter_id, { key_events: linesToArray(e.target.value) })} />
+      </FormField>
+      <FormField label="open_threads">
+        <textarea rows={3} value={arrayToLines(safe.open_threads)} onChange={e => onUpdateSummary(safe.chapter_id, { open_threads: linesToArray(e.target.value) })} />
+      </FormField>
+      <FormField label="summary_target">
+        <textarea rows={4} value={safe.summary_target || ""} onChange={e => onUpdateSummary(safe.chapter_id, { summary_target: e.target.value })} />
+      </FormField>
+      <FormField label="translation_notes">
+        <textarea rows={3} value={safe.translation_notes || ""} onChange={e => onUpdateSummary(safe.chapter_id, { translation_notes: e.target.value })} />
+      </FormField>
+      <div className="entity-pick">
+        <div className="form-label">characters_present</div>
+        {!entities.length ? <span className="faint">No entities available yet.</span> : entities.map(e => {
+          const checked = (safe.characters_present || []).includes(e.entity_id);
+          return (
+            <label key={e.entity_id} className="check-row">
+              <input type="checkbox" checked={checked} onChange={() => {
+                const current = safe.characters_present || [];
+                const next = checked ? current.filter(id => id !== e.entity_id) : [...current, e.entity_id];
+                onUpdateSummary(safe.chapter_id, { characters_present: next });
+              }} />
+              <span>{e.canonical_source || e.entity_id}</span>
+              <span className="mono faint">{e.entity_id}</span>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- NOTES ---------- */
+function NotesTab({ block, onUpdateBlockNotes }) {
+  const annotations = block.annotations || {};
+  const update = patch => onUpdateBlockNotes(block.block_id, patch);
+  return (
+    <div className="tab-body">
+      <div className="ref-explain">
+        <Ic.doc size={12} />
+        <span><b>Block-level soft context.</b> These notes help interpretation and translation review, but they are advisory and not hard links like entities or glossary terms.</span>
+      </div>
+      <div className="sum-meta">
+        <span className="lockfield"><span className="lf-k">block</span><span className="lf-v">{block.block_id}</span></span>
+        <span className="lockfield"><span className="lf-k">type</span><span className="lf-v">{block.block_type}</span></span>
+      </div>
+      <div className="form-grid">
+        <FormField label="tone">
+          <input value={annotations.tone || ""} onChange={e => update({ tone: e.target.value || null })} />
+        </FormField>
+        <FormField label="motifs">
+          <input value={arrayToCsv(annotations.motifs)} onChange={e => update({ motifs: csvToArray(e.target.value) })} />
+        </FormField>
+      </div>
+      <FormField label="implicit_meaning">
+        <textarea rows={5} value={annotations.implicit_meaning || ""} onChange={e => update({ implicit_meaning: e.target.value || null })} />
+      </FormField>
+      <FormField label="narrative_note">
+        <textarea rows={5} value={annotations.narrative_note || ""} onChange={e => update({ narrative_note: e.target.value || null })} />
+      </FormField>
     </div>
   );
 }
@@ -425,6 +501,7 @@ const TABS = [
   { id: "glossary", label: "Glossary", icon: Ic.tag },
   { id: "entities", label: "Entities", icon: Ic.users },
   { id: "summary", label: "Summary", icon: Ic.doc },
+  { id: "notes", label: "Notes", icon: Ic.doc },
   { id: "reference", label: "Reference", icon: Ic.book },
   { id: "validate", label: "Validate", icon: Ic.checkCircle },
   { id: "progress", label: "Progress", icon: Ic.layers },
@@ -455,6 +532,7 @@ function RightPanel({ openTabs, onToggleTab, counts, ctx }) {
                   {t.id === "glossary" && <GlossaryTab terms={ctx.terms} onDeleteTerm={ctx.onDeleteTerm} onUpdateTerm={ctx.onUpdateTerm} />}
                   {t.id === "entities" && <EntitiesTab entities={ctx.entities} allEntities={ctx.allEntities} block={ctx.block} onUpdateEntity={ctx.onUpdateEntity} onUpdateDiscourse={ctx.onUpdateDiscourse} onDeleteEntity={ctx.onDeleteEntity} />}
                   {t.id === "summary" && <SummaryTab summary={ctx.summary} entities={ctx.allEntities} onUpdateSummary={ctx.onUpdateSummary} />}
+                  {t.id === "notes" && <NotesTab block={ctx.block} onUpdateBlockNotes={ctx.onUpdateBlockNotes} />}
                   {t.id === "reference" && <ReferenceTab key={ctx.block.block_id} refs={ctx.references} block={ctx.block} onUpdateReference={ctx.onUpdateReference} onCreateReference={ctx.onCreateReference} onSaveDraft={ctx.onSaveDraft} onMarkReviewed={ctx.onMarkReviewedReference} onLockReference={ctx.onLockReference} />}
                   {t.id === "validate" && <ValidateTab errors={ctx.errors} onJump={ctx.onJump} />}
                   {t.id === "progress" && <ProgressTab stats={ctx.stats} freezeReasons={ctx.freezeReasons} history={ctx.history} />}
