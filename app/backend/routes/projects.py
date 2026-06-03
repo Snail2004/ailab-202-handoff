@@ -6,6 +6,9 @@ from services.normalize_flow import (
     apply_normalized_document,
     build_project_candidate_parts,
     import_structure_plan,
+    load_agent_structure_plan,
+    normalizer_paths,
+    normalizer_status,
 )
 from services.workspace import (
     ProjectError,
@@ -31,7 +34,13 @@ def health():
 @bp.get("/projects")
 def projects_index():
     try:
-        return ok(list_projects())
+        projects = list_projects()
+        for project in projects:
+            try:
+                project["normalizer"] = normalizer_status(get_project_path(project["doc_id"]))
+            except ProjectError:
+                project["normalizer"] = {}
+        return ok(projects)
     except ProjectError as exc:
         return error("project_error", str(exc), 400)
 
@@ -54,6 +63,7 @@ def project_detail(doc_id: str):
             return error("missing_project", "Project not found", 404)
         state = project_file_state(doc_id)
         state["root"] = str(get_project_path(doc_id))
+        state["normalizer"] = normalizer_status(get_project_path(doc_id))
         return ok(state)
     except ProjectError as exc:
         return error("invalid_project", str(exc), 400)
@@ -127,10 +137,23 @@ def normalize_candidate_parts(doc_id: str):
     try:
         if not has_project(doc_id):
             return error("missing_project", "Project not found", 404)
-        candidate = build_project_candidate_parts(get_project_path(doc_id), doc_id)
+        project_path = get_project_path(doc_id)
+        candidate = dict(build_project_candidate_parts(project_path, doc_id))
+        candidate["paths"] = normalizer_paths(project_path)
+        candidate["normalizer"] = normalizer_status(project_path)
         return ok(candidate, status=201)
     except ProjectError as exc:
         return error("normalize_candidate_error", str(exc), 400)
+
+
+@bp.get("/projects/<doc_id>/normalize/agent-plan")
+def normalize_agent_plan(doc_id: str):
+    try:
+        if not has_project(doc_id):
+            return error("missing_project", "Project not found", 404)
+        return ok(load_agent_structure_plan(get_project_path(doc_id), doc_id))
+    except ProjectError as exc:
+        return error("normalize_agent_plan_error", str(exc), 400)
 
 
 @bp.post("/projects/<doc_id>/normalize/plan")

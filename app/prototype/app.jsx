@@ -148,6 +148,12 @@ function historyTip(prefix, event) {
   return event?.label ? `${prefix}: ${event.label}` : `${prefix} unavailable`;
 }
 
+function joinLocalPath(root, ...parts) {
+  if (!root) return "";
+  const sep = root.includes("\\") ? "\\" : "/";
+  return [root.replace(/[\\/]+$/, ""), ...parts].filter(Boolean).join(sep);
+}
+
 function TopBar({ docId, dirty, lastSaved, onValidate, onExport, onFreeze, onUndo, onRedo, history, freezeReady, freezeReasons }) {
   const canUndo = !!history?.can_undo && !dirty;
   const canRedo = !!history?.can_redo && !dirty;
@@ -578,10 +584,42 @@ function App() {
     if (!activeDocId) return null;
     try {
       const candidate = await API.normalizeCandidateParts(activeDocId);
+      if (!candidate.paths?.candidate_parts || !candidate.paths?.agent_structure_plan) {
+        try {
+          const project = await API.getProject(activeDocId);
+          const projectRoot = project.root || project.path || "";
+          candidate.paths = {
+            ...(candidate.paths || {}),
+            project_root: projectRoot,
+            candidate_parts: joinLocalPath(projectRoot, "working", "normalized", "candidate_parts.json"),
+            agent_structure_plan: joinLocalPath(projectRoot, "working", "normalized", "agent_structure_plan.json"),
+          };
+        } catch (pathErr) {
+          candidate.paths = {
+            ...(candidate.paths || {}),
+            project_root: `ailab_projects/${activeDocId}`,
+            candidate_parts: `ailab_projects/${activeDocId}/working/normalized/candidate_parts.json`,
+            agent_structure_plan: `ailab_projects/${activeDocId}/working/normalized/agent_structure_plan.json`,
+          };
+        }
+      }
+      await refreshProjects();
       toast("Candidate parts built", "good", `${candidate.parts?.length || 0} parts · ${candidate.source_fingerprint || ""}`);
       return candidate;
     } catch (err) {
       toast("Build candidate failed", "bad", errorMessage(err));
+      return null;
+    }
+  }
+
+  async function loadNormalizeAgentPlan() {
+    if (!activeDocId) return null;
+    try {
+      const result = await API.getNormalizeAgentPlan(activeDocId);
+      toast("Agent StructurePlan loaded", "good", result.path || "working/normalized/agent_structure_plan.json");
+      return result;
+    } catch (err) {
+      toast("Load agent StructurePlan failed", "bad", errorMessage(err));
       return null;
     }
   }
@@ -591,6 +629,7 @@ function App() {
     try {
       const result = await API.importStructurePlan(activeDocId, { plan, user: currentUser() });
       const preview = result.preview || {};
+      await refreshProjects();
       toast("StructurePlan valid", preview.low_confidence || preview.needs_human_check ? "info" : "good",
         `${preview.chapters?.length || 0} chapters · body ${preview.body_coverage || "n/a"}`);
       return result;
@@ -928,6 +967,7 @@ function App() {
           onBack={() => setView("workspace")}
           onExtract={runExtract}
           onBuildNormalizeCandidate={buildNormalizeCandidate}
+          onLoadNormalizeAgentPlan={loadNormalizeAgentPlan}
           onImportNormalizePlan={importNormalizePlan}
           onApplyNormalizePlan={applyNormalizePlan}
         />

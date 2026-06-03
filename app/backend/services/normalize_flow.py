@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -29,26 +30,114 @@ NORMALIZED_DIR = "normalized"
 PROMPT_ID = "source-structure-normalizer-v1"
 
 
+def _normalized_dir_path(project_path: Path) -> Path:
+    return project_path / "working" / NORMALIZED_DIR
+
+
 def _normalized_dir(project_path: Path) -> Path:
-    path = project_path / "working" / NORMALIZED_DIR
+    path = _normalized_dir_path(project_path)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def _candidate_path(project_path: Path) -> Path:
-    return _normalized_dir(project_path) / "candidate_parts.json"
+    return _normalized_dir_path(project_path) / "candidate_parts.json"
 
 
 def _plan_path(project_path: Path) -> Path:
-    return _normalized_dir(project_path) / "structure_plan.json"
+    return _normalized_dir_path(project_path) / "structure_plan.json"
+
+
+def _agent_plan_path(project_path: Path) -> Path:
+    return _normalized_dir_path(project_path) / "agent_structure_plan.json"
 
 
 def _normalized_document_path(project_path: Path) -> Path:
-    return _normalized_dir(project_path) / "normalized_document.json"
+    return _normalized_dir_path(project_path) / "normalized_document.json"
 
 
 def _normalization_report_path(project_path: Path) -> Path:
-    return _normalized_dir(project_path) / "normalization_report.json"
+    return _normalized_dir_path(project_path) / "normalization_report.json"
+
+
+def _normalization_history_path(project_path: Path) -> Path:
+    return _normalized_dir_path(project_path) / "normalization_history.jsonl"
+
+
+def normalizer_paths(project_path: Path) -> dict[str, str]:
+    return {
+        "project_root": str(project_path.resolve()),
+        "candidate_parts": str(_candidate_path(project_path).resolve()),
+        "agent_structure_plan": str(_agent_plan_path(project_path).resolve()),
+        "structure_plan": str(_plan_path(project_path).resolve()),
+        "normalized_document": str(_normalized_document_path(project_path).resolve()),
+        "normalization_report": str(_normalization_report_path(project_path).resolve()),
+        "normalization_history": str(_normalization_history_path(project_path).resolve()),
+    }
+
+
+def _append_normalization_history(project_path: Path, event: dict[str, Any]) -> None:
+    path = _normalization_history_path(project_path)
+    row = {"ts": now_iso(), **event}
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
+def _read_json_if_exists(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = read_json(path)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _read_normalization_history(project_path: Path, limit: int = 20) -> list[dict[str, Any]]:
+    path = _normalization_history_path(project_path)
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            if isinstance(item, dict):
+                rows.append(item)
+    except Exception:
+        return []
+    return rows[-limit:]
+
+
+def normalizer_status(project_path: Path) -> dict[str, Any]:
+    candidate = _read_json_if_exists(_candidate_path(project_path))
+    report = _read_json_if_exists(_normalization_report_path(project_path))
+    normalized_document = _read_json_if_exists(_normalized_document_path(project_path))
+    extraction_report = _read_json_if_exists(project_path / "working" / "extraction_report.json")
+    history = _read_normalization_history(project_path)
+    last = history[-1] if history else {}
+    applied = bool(extraction_report.get("normalized_structure"))
+    applied_to_document = report.get("applied_to_document") if isinstance(report.get("applied_to_document"), dict) else {}
+
+    return {
+        "candidate_built": _candidate_path(project_path).exists(),
+        "agent_plan_available": _agent_plan_path(project_path).exists(),
+        "plan_imported": _plan_path(project_path).exists(),
+        "normalized_preview_available": _normalized_document_path(project_path).exists() and _normalization_report_path(project_path).exists(),
+        "applied": applied,
+        "source_fingerprint": report.get("source_fingerprint") or candidate.get("source_fingerprint"),
+        "source_format": report.get("source_format") or candidate.get("source_format"),
+        "chapters": applied_to_document.get("chapters") or len(normalized_document.get("chapters", [])),
+        "blocks": applied_to_document.get("blocks") or sum(len(ch.get("blocks", [])) for ch in normalized_document.get("chapters", [])),
+        "low_confidence": bool(report.get("low_confidence")),
+        "needs_human_check": bool(report.get("needs_human_check")),
+        "last_event": last.get("event"),
+        "last_event_at": last.get("ts"),
+        "last_applied_at": (report.get("ai_provenance") or {}).get("imported_at") if isinstance(report.get("ai_provenance"), dict) else None,
+        "history": history,
+        "paths": normalizer_paths(project_path),
+    }
 
 
 def _source_for_project(project_path: Path) -> Path:
@@ -64,6 +153,12 @@ def build_project_candidate_parts(project_path: Path, doc_id: str) -> dict[str, 
     source_path = _source_for_project(project_path)
     candidate = build_candidate_parts(source_path, doc_id=doc_id)
     write_json_atomic(_candidate_path(project_path), candidate)
+    _append_normalization_history(project_path, {
+        "event": "candidate_built",
+        "source_fingerprint": candidate.get("source_fingerprint"),
+        "source_format": candidate.get("source_format"),
+        "parts": len(candidate.get("parts", [])),
+    })
     log_event(project_path, "normalize_candidate_parts", {
         "source_fingerprint": candidate.get("source_fingerprint"),
         "parts": len(candidate.get("parts", [])),
@@ -77,6 +172,22 @@ def _load_or_build_candidate(project_path: Path, doc_id: str) -> dict[str, Any]:
     if path.exists():
         return read_json(path)
     return build_project_candidate_parts(project_path, doc_id)
+
+
+def load_agent_structure_plan(project_path: Path, doc_id: str) -> dict[str, Any]:
+    ensure_project_dirs(doc_id)
+    ensure_working_files(project_path)
+    path = _agent_plan_path(project_path)
+    if not path.exists():
+        raise ProjectError("No agent StructurePlan found at working/normalized/agent_structure_plan.json.")
+    plan = read_json(path)
+    if not isinstance(plan, dict):
+        raise ProjectError("Agent StructurePlan file must contain one JSON object.")
+    return {
+        "plan": plan,
+        "path": str(path.resolve()),
+        "paths": normalizer_paths(project_path),
+    }
 
 
 def _body_coverage(candidate: dict[str, Any], plan: dict[str, Any], normalized_document: dict[str, Any]) -> dict[str, Any]:
@@ -151,6 +262,15 @@ def import_structure_plan(project_path: Path, doc_id: str, plan: dict[str, Any])
     output_dir = _normalized_dir(project_path)
     result = apply_plan(candidate, plan, output_dir)
     preview = _preview_payload(candidate, plan, result)
+    _append_normalization_history(project_path, {
+        "event": "plan_imported",
+        "source_fingerprint": candidate.get("source_fingerprint"),
+        "source_format": candidate.get("source_format"),
+        "chapters": len(preview["chapters"]),
+        "low_confidence": preview["low_confidence"],
+        "needs_human_check": preview["needs_human_check"],
+        "body_coverage": preview["body_coverage"],
+    })
     log_event(project_path, "normalize_plan_import", {
         "source_fingerprint": candidate.get("source_fingerprint"),
         "chapters": len(preview["chapters"]),
@@ -261,6 +381,17 @@ def apply_normalized_document(
             extraction_report["source_format_mismatch"] = metadata_report["source_format_mismatch"]
         write_json_atomic(project_path / "working" / "extraction_report.json", extraction_report)
 
+        _append_normalization_history(project_path, {
+            "event": "applied",
+            "job_id": job_id,
+            "user": user,
+            "source_fingerprint": report.get("source_fingerprint"),
+            "source_format": report.get("source_format"),
+            "chapters": extraction_report["chapters"],
+            "blocks": extraction_report["blocks"],
+            "low_confidence": bool(report.get("low_confidence")),
+            "needs_human_check": bool(report.get("needs_human_check")),
+        })
         job.update({
             "status": "done",
             "finished_at": now_iso(),

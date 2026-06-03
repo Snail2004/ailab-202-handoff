@@ -194,8 +194,33 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertEqual(len(candidate["parts"]), 5)
         self.assertEqual(candidate["parts"][1]["text"], "I")
         self.assertTrue(self._project_root(doc_id).joinpath("working", "normalized", "candidate_parts.json").exists())
+        self.assertEqual(
+            candidate["paths"]["candidate_parts"],
+            str(self._project_root(doc_id).joinpath("working", "normalized", "candidate_parts.json").resolve()),
+        )
+        self.assertEqual(
+            candidate["paths"]["agent_structure_plan"],
+            str(self._project_root(doc_id).joinpath("working", "normalized", "agent_structure_plan.json").resolve()),
+        )
+        self.assertEqual(candidate["paths"]["project_root"], str(self._project_root(doc_id).resolve()))
+        self.assertIn("normalization_history", candidate["paths"])
+        self.assertTrue(candidate["normalizer"]["candidate_built"])
+        self.assertEqual(candidate["normalizer"]["last_event"], "candidate_built")
+        self.assertTrue(
+            self._project_root(doc_id)
+            .joinpath("working", "normalized", "normalization_history.jsonl")
+            .exists()
+        )
 
         plan = self._minimal_structure_plan(doc_id, candidate["source_fingerprint"])
+        agent_plan_path = self._project_root(doc_id).joinpath("working", "normalized", "agent_structure_plan.json")
+        agent_plan_path.write_text(json.dumps(plan), encoding="utf-8")
+        agent_plan_response = self.client.get(f"/api/projects/{doc_id}/normalize/agent-plan")
+        self.assertEqual(agent_plan_response.status_code, 200)
+        agent_plan_payload = agent_plan_response.get_json()["data"]
+        self.assertEqual(agent_plan_payload["plan"]["source_fingerprint"], candidate["source_fingerprint"])
+        self.assertEqual(agent_plan_payload["path"], str(agent_plan_path.resolve()))
+
         preview_response = self.client.post(f"/api/projects/{doc_id}/normalize/plan", json={"plan": plan})
         self.assertEqual(preview_response.status_code, 201)
         preview = preview_response.get_json()["data"]["preview"]
@@ -204,6 +229,11 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertTrue(preview["content_invariance_ok"])
         self.assertFalse(preview["low_confidence"])
         self.assertFalse(self._project_root(doc_id).joinpath("canonical", "document.json").exists())
+        project_state = self.client.get(f"/api/projects/{doc_id}").get_json()["data"]
+        self.assertTrue(project_state["normalizer"]["plan_imported"])
+        self.assertTrue(project_state["normalizer"]["normalized_preview_available"])
+        self.assertEqual(project_state["normalizer"]["last_event"], "plan_imported")
+        self.assertEqual(project_state["normalizer"]["chapters"], 2)
 
         apply_response = self.client.post(f"/api/projects/{doc_id}/normalize/apply", json={
             "approved": True,
@@ -225,6 +255,14 @@ class BackendApiSmokeTest(unittest.TestCase):
         )
         self.assertEqual(report["ai_provenance"]["prompt_id"], "source-structure-normalizer-v1")
         self.assertFalse(report["ai_provenance"]["tool_called_llm"])
+        project_state = self.client.get(f"/api/projects/{doc_id}").get_json()["data"]
+        self.assertTrue(project_state["normalizer"]["applied"])
+        self.assertEqual(project_state["normalizer"]["last_event"], "applied")
+        self.assertEqual(project_state["normalizer"]["blocks"], 4)
+        self.assertEqual(
+            [event["event"] for event in project_state["normalizer"]["history"]],
+            ["candidate_built", "plan_imported", "applied"],
+        )
 
     def test_normalize_invalid_plan_does_not_write_document(self):
         doc_id = "normalize_bad_plan"

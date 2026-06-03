@@ -16,6 +16,7 @@ function ProjectSourceScreen({
   onBack,
   onExtract,
   onBuildNormalizeCandidate,
+  onLoadNormalizeAgentPlan,
   onImportNormalizePlan,
   onApplyNormalizePlan,
 }) {
@@ -35,6 +36,34 @@ function ProjectSourceScreen({
   const extracted = blocks.length > 0;
   const selectedProject = projects.find(p => p.doc_id === activeDocId);
   const protectedProject = activeDocId === "gold_demo_01";
+  const normalizerState = selectedProject?.normalizer || {};
+  const normalizerHistory = Array.isArray(normalizerState.history)
+    ? normalizerState.history.slice().reverse().slice(0, 6)
+    : [];
+
+  function normalizerStateLabel() {
+    if (normalizerState.applied) return "normalized";
+    if (normalizerState.normalized_preview_available) return "preview ready";
+    if (normalizerState.agent_plan_available) return "agent plan ready";
+    if (normalizerState.candidate_built) return "candidate built";
+    return "not normalized";
+  }
+
+  function normalizerStateTone() {
+    if (normalizerState.low_confidence || normalizerState.needs_human_check) return "warn";
+    if (normalizerState.applied) return "done";
+    if (normalizerState.normalized_preview_available || normalizerState.agent_plan_available || normalizerState.candidate_built) return "info";
+    return "";
+  }
+
+  function normalizerEventLabel(event) {
+    const labels = {
+      candidate_built: "Built candidate",
+      plan_imported: "Imported plan",
+      applied: "Applied normalized structure",
+    };
+    return labels[event] || event || "Normalizer event";
+  }
 
   React.useEffect(() => {
     setProjectNote(selectedProject?.note || "");
@@ -105,8 +134,91 @@ function ProjectSourceScreen({
     return normalizeCandidate ? JSON.stringify(normalizeCandidate, null, 2) : "";
   }
 
+  function normalizerPaths() {
+    if (!normalizeCandidate) return {};
+    const docId = normalizeCandidate.doc_id || activeDocId || "";
+    const fallbackRoot = docId ? `ailab_projects/${docId}` : "";
+    return {
+      ...(normalizeCandidate.paths || {}),
+      project_root: normalizeCandidate.paths?.project_root || fallbackRoot,
+      candidate_parts: normalizeCandidate.paths?.candidate_parts || (fallbackRoot ? `${fallbackRoot}/working/normalized/candidate_parts.json` : ""),
+      agent_structure_plan: normalizeCandidate.paths?.agent_structure_plan || (fallbackRoot ? `${fallbackRoot}/working/normalized/agent_structure_plan.json` : ""),
+    };
+  }
+
+  function candidatePath() {
+    return normalizerPaths().candidate_parts || "";
+  }
+
+  function normalizerPrompt() {
+    if (!normalizeCandidate) return "";
+    const paths = normalizerPaths();
+    return [
+      "Bạn là Source Structure Normalizer Agent cho dự án AI-LAB.",
+      "",
+      "Mục tiêu: từ candidate_parts JSON của một nguồn TXT/EPUB, sinh StructurePlan JSON để chuẩn hóa cấu trúc chương/đoạn trước khi đưa vào extractor.",
+      "",
+      "Trước khi làm, hãy đọc:",
+      "1. skills/source-structure-normalizer/SKILL.md",
+      "2. skills/source-structure-normalizer/references/STRUCTURE_PLAN_CONTRACT.md",
+      "3. Nếu cần ví dụ: skills/source-structure-normalizer/references/CANTERVILLE_EXAMPLE.md",
+      "",
+      "Nguồn đang xử lý:",
+      `- doc_id: ${normalizeCandidate.doc_id || activeDocId || ""}`,
+      `- source_format: ${normalizeCandidate.source_format || ""}`,
+      `- source_fingerprint: ${normalizeCandidate.source_fingerprint || ""}`,
+      `- project folder: ${paths.project_root || ""}`,
+      `- candidate_parts: ${paths.candidate_parts || ""}`,
+      `- agent_structure_plan: ${paths.agent_structure_plan || ""}`,
+      "",
+      "Yêu cầu:",
+      "- Chỉ dùng đúng candidate_parts đã đưa.",
+      "- Echo chính xác `doc_id` và `source_fingerprint`.",
+      "- Không dùng plan của TXT cho EPUB hoặc ngược lại.",
+      "- Không dịch.",
+      "- Không annotate glossary/entity/summary/reference/discourse/block_type.",
+      "- Không rewrite, paraphrase, sửa chữ, hoặc tự ý xóa body text.",
+      "- Chỉ quyết định bằng `part_index` / `spine_index`.",
+      "- Drop front/back matter rõ ràng: title page, author/illustrator credit, TOC lặp, imprint, copyright, Gutenberg license, colophon, publisher ads.",
+      "- Chọn chapter heading thật nếu có.",
+      "- Không dùng book title, author line, cover, title page, hoặc front matter làm chapter heading.",
+      "- Nếu nguồn là truyện một phần không có heading chương thật: để `chapter_headings: []`, đặt confidence thấp hơn và flag `needs_human_check`; backend sẽ fallback thành một chương.",
+      "- Nếu title page dính chung body text trong cùng part: không drop part đó, giữ lại và flag.",
+      "- Merge chỉ khi các part liền nhau rõ ràng là cùng một đoạn bị tách cơ học.",
+      "- Nếu không chắc, giữ part và flag `needs_human_check`, không đoán bừa.",
+      "",
+      "Output:",
+      "- Nếu có quyền ghi file, hãy ghi đúng một JSON object vào `agent_structure_plan` ở trên.",
+      "- Nếu không thể ghi file, trả về đúng một JSON object theo StructurePlan contract.",
+      "- JSON phải theo StructurePlan contract.",
+      "- Không bọc markdown code block.",
+      "- Không giải thích ngoài JSON.",
+      "",
+      "Self-check trước khi trả:",
+      "- `source_fingerprint` khớp candidate.",
+      "- Mọi `part_index` / `spine_index` đều tồn tại.",
+      "- Không part nào vừa drop vừa là heading.",
+      "- Heading theo đúng thứ tự đọc.",
+      "- Không trộn candidate của TXT và EPUB.",
+      "- Body text chính không bị drop.",
+      "- `confidence` phản ánh độ chắc chắn.",
+    ].join("\n");
+  }
+
   async function copyCandidate() {
     const text = candidateJson();
+    if (!text) return;
+    await navigator.clipboard.writeText(text);
+  }
+
+  async function copyCandidatePath() {
+    const text = candidatePath();
+    if (!text) return;
+    await navigator.clipboard.writeText(text);
+  }
+
+  async function copyNormalizerPrompt() {
+    const text = normalizerPrompt();
     if (!text) return;
     await navigator.clipboard.writeText(text);
   }
@@ -133,6 +245,18 @@ function ProjectSourceScreen({
     setNormalizeResult(null);
     setNormalizeReviewed(false);
     event.target.value = "";
+  }
+
+  async function loadAgentPlanFromWorking() {
+    if (!onLoadNormalizeAgentPlan) return;
+    setNormalizeBusy("load-agent-plan");
+    const result = await onLoadNormalizeAgentPlan();
+    if (result?.plan) {
+      setNormalizePlanText(JSON.stringify(result.plan, null, 2));
+      setNormalizeResult(null);
+      setNormalizeReviewed(false);
+    }
+    setNormalizeBusy("");
   }
 
   async function validatePlan() {
@@ -314,6 +438,31 @@ function ProjectSourceScreen({
             <p className="normalizer-intro">
               Optional pre-extract step for sources with weak chapter structure. The tool only validates and applies an imported StructurePlan; it does not call an LLM.
             </p>
+            <div className="normalizer-status-card">
+              <div className="normalizer-status-main">
+                <span className={"normalizer-state-pill " + normalizerStateTone()}>{normalizerStateLabel()}</span>
+                {normalizerState.source_format && <span><b>{normalizerState.source_format}</b> source</span>}
+                {normalizerState.source_fingerprint && <span className="mono">{normalizerState.source_fingerprint}</span>}
+                {normalizerState.applied && <span><b>{normalizerState.chapters || 0}</b> ch · <b>{normalizerState.blocks || 0}</b> blocks</span>}
+                {normalizerState.last_event_at && <span className="faint">{normalizerState.last_event_at}</span>}
+              </div>
+              {normalizerHistory.length > 0 && (
+                <details className="normalizer-history">
+                  <summary>Normalization history</summary>
+                  {normalizerHistory.map((event, idx) => (
+                    <div className="normalizer-history-row" key={`${event.ts || "event"}-${idx}`}>
+                      <span className="mono">{event.ts || ""}</span>
+                      <span>{normalizerEventLabel(event.event)}</span>
+                      <span className="faint">
+                        {event.chapters ? `${event.chapters} ch` : ""}
+                        {event.blocks ? ` · ${event.blocks} blocks` : ""}
+                        {event.parts ? `${event.parts} parts` : ""}
+                      </span>
+                    </div>
+                  ))}
+                </details>
+              )}
+            </div>
             <div className="normalizer-steps">
               <div className="normalizer-step">
                 <div className="normalizer-step-head">
@@ -328,6 +477,8 @@ function ProjectSourceScreen({
                     <Ic.layers size={13} />{normalizeBusy === "candidate" ? "Building..." : "Build candidate"}
                   </button>
                   <button className="btn" disabled={!normalizeCandidate} onClick={copyCandidate}><Ic.doc size={13} />Copy JSON</button>
+                  <button className="btn" disabled={!candidatePath()} onClick={copyCandidatePath}><Ic.folder size={13} />Copy path</button>
+                  <button className="btn" disabled={!normalizeCandidate} onClick={copyNormalizerPrompt}><Ic.sparkle size={13} />Copy prompt</button>
                   <button className="btn" disabled={!normalizeCandidate} onClick={downloadCandidate}><Ic.upload size={13} />Download JSON</button>
                 </div>
                 {normalizeCandidate && (
@@ -344,7 +495,7 @@ function ProjectSourceScreen({
                   <span className="step-num">2</span>
                   <div>
                     <div className="step-title">Import StructurePlan</div>
-                    <div className="step-sub">Paste or upload the JSON plan produced by the skill.</div>
+                    <div className="step-sub">Paste/upload JSON, or load the agent-written plan from working/normalized.</div>
                   </div>
                 </div>
                 <textarea
@@ -355,6 +506,9 @@ function ProjectSourceScreen({
                   onChange={e => { setNormalizePlanText(e.target.value); setNormalizeResult(null); setNormalizeReviewed(false); }}
                 />
                 <div className="normalizer-actions">
+                  <button className="btn" disabled={!activeDocId || normalizeBusy === "load-agent-plan"} onClick={loadAgentPlanFromWorking}>
+                    <Ic.sparkle size={13} />{normalizeBusy === "load-agent-plan" ? "Loading..." : "Load agent plan"}
+                  </button>
                   <label className="btn">
                     <Ic.file size={13} />Load plan file
                     <input className="hidden-file" type="file" accept=".json,application/json" onChange={loadPlanFile} />
