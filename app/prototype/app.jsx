@@ -4,6 +4,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
 const API = window.AILAB_API;
 const STORAGE_DOC = "ailab.doc_id";
 const STORAGE_USER = "ailab.user";
+const STORAGE_CENTER_MODE = "ailab.center_mode";
 const DEFAULT_USER = "U2 · Mai";
 const EDITABLE_META = new Set(["title", "author", "domain", "genre", "source_format", "license", "source_url", "contamination_risk"]);
 
@@ -233,6 +234,7 @@ function App() {
   const [filters, setFilters] = useState(new Set());
   const [rightActive, setRightActive] = useState("glossary");
   const [editing, setEditing] = useState(false);
+  const [centerMode, setCenterModeState] = useState(() => localStorage.getItem(STORAGE_CENTER_MODE) || "chapter");
   const [toasts, setToasts] = useState([]);
   const [modal, setModal] = useState(null);
   const [dirty, setDirty] = useState(false);
@@ -304,6 +306,11 @@ function App() {
 
   const block = blocks.find(b => b.block_id === selectedId) || blocks[0] || null;
 
+  function setCenterMode(mode) {
+    setCenterModeState(mode);
+    localStorage.setItem(STORAGE_CENTER_MODE, mode);
+  }
+
   const touchStart = useCallback(() => {
     setDirty(true);
     savedAt.current = Date.now();
@@ -370,8 +377,20 @@ function App() {
   }, [glossary, entities]);
 
   const spans = useMemo(() => buildSpans(block, glossary, entities), [block, glossary, entities]);
+  const getSpansForBlock = useCallback((targetBlock) => buildSpans(targetBlock, glossary, entities), [glossary, entities]);
   const allSpans = useMemo(() => blocks.flatMap(b => buildSpans(b, glossary, entities).map(s => ({ ...s, block_id: b.block_id }))), [blocks, glossary, entities]);
   const staleCount = allSpans.filter(s => s.stale).length;
+
+  const activeChapter = useMemo(() => {
+    if (!block) return null;
+    return chapters.find(ch => ch.chapter_id === block.chapter_id) || null;
+  }, [chapters, block]);
+
+  const chapterBlocks = useMemo(() => {
+    if (!block) return [];
+    const rows = blocks.filter(b => b.chapter_id === block.chapter_id);
+    return rows.length ? rows : [block];
+  }, [blocks, block]);
 
   const blockTerms = useMemo(() => block ? glossary.filter(t => (t.occurrences || []).some(o => o.block_id === block.block_id)) : [], [glossary, block]);
   const blockEntities = useMemo(() => block ? entities.filter(e => (e.mentions || []).some(m => m.block_id === block.block_id)
@@ -453,6 +472,19 @@ function App() {
 
   function selectBlock(id) { setSelectedId(id); setEditing(false); }
   function toggleFilter(id) { setFilters(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; }); }
+  function nextUnreviewedBlock() {
+    if (!blocks.length) return;
+    const currentIndex = Math.max(0, blocks.findIndex(b => b.block_id === selectedId));
+    const after = blocks.slice(currentIndex + 1).find(b => !review.blocks?.[b.block_id]?.reviewed);
+    const before = blocks.slice(0, currentIndex + 1).find(b => !review.blocks?.[b.block_id]?.reviewed);
+    const next = after || before;
+    if (next) {
+      selectBlock(next.block_id);
+      toast(`Next unreviewed: ${next.block_id}`, "info");
+    } else {
+      toast("All blocks are reviewed", "good");
+    }
+  }
 
   async function selectProject(docId) {
     const chosen = projects.find(p => p.doc_id === docId);
@@ -665,42 +697,59 @@ function App() {
     }
   }
 
-  function changeType(t) {
-    if (!block) return;
-    setBlocks(bs => bs.map(b => b.block_id === block.block_id ? { ...b, block_type: t } : b));
-    mutate(() => API.patchBlock(activeDocId, block.block_id, { block_type: t, user: currentUser() }), { success: `block_type -> ${t}` });
+  function findBlock(blockId) {
+    return blocks.find(b => b.block_id === blockId) || null;
   }
-  function toggleOpening() {
-    if (!block) return;
-    const next = !block.is_chapter_opening;
-    setBlocks(bs => bs.map(b => b.block_id === block.block_id ? { ...b, is_chapter_opening: next } : b));
-    mutate(() => API.patchBlock(activeDocId, block.block_id, { is_chapter_opening: next, user: currentUser() }));
+
+  function changeType(t, blockId = selectedId) {
+    const target = findBlock(blockId);
+    if (!target) return;
+    setSelectedId(target.block_id);
+    setBlocks(bs => bs.map(b => b.block_id === target.block_id ? { ...b, block_type: t } : b));
+    mutate(() => API.patchBlock(activeDocId, target.block_id, { block_type: t, user: currentUser() }), { success: `block_type -> ${t}` });
   }
-  function toggleFlag(f) {
-    if (!block) return;
+
+  function toggleOpening(blockId = selectedId) {
+    const target = findBlock(blockId);
+    if (!target) return;
+    setSelectedId(target.block_id);
+    const next = !target.is_chapter_opening;
+    setBlocks(bs => bs.map(b => b.block_id === target.block_id ? { ...b, is_chapter_opening: next } : b));
+    mutate(() => API.patchBlock(activeDocId, target.block_id, { is_chapter_opening: next, user: currentUser() }));
+  }
+
+  function toggleFlag(f, blockId = selectedId) {
+    const target = findBlock(blockId);
+    if (!target) return;
+    setSelectedId(target.block_id);
     let flags;
-    const current = block.quality_flags || ["ok"];
+    const current = target.quality_flags || ["ok"];
     if (f === "ok") flags = ["ok"];
     else {
       flags = current.includes(f) ? current.filter(x => x !== f) : [...current.filter(x => x !== "ok"), f];
       if (!flags.length) flags = ["ok"];
     }
-    setBlocks(bs => bs.map(b => b.block_id === block.block_id ? { ...b, quality_flags: flags } : b));
-    mutate(() => API.patchBlock(activeDocId, block.block_id, { quality_flags: flags, user: currentUser() }));
+    setBlocks(bs => bs.map(b => b.block_id === target.block_id ? { ...b, quality_flags: flags } : b));
+    mutate(() => API.patchBlock(activeDocId, target.block_id, { quality_flags: flags, user: currentUser() }));
   }
-  function markReviewed() {
-    if (!block) return;
-    const next = !review.blocks?.[block.block_id]?.reviewed;
-    mutate(() => API.patchReview(activeDocId, block.block_id, { reviewed: next, reviewed_by: currentUser(), user: currentUser() }), {
-      success: next ? `${block.block_id} marked reviewed` : `${block.block_id} marked unreviewed`,
+
+  function markReviewed(blockId = selectedId) {
+    const target = findBlock(blockId);
+    if (!target) return;
+    setSelectedId(target.block_id);
+    const next = !review.blocks?.[target.block_id]?.reviewed;
+    mutate(() => API.patchReview(activeDocId, target.block_id, { reviewed: next, reviewed_by: currentUser(), user: currentUser() }), {
+      success: next ? `${target.block_id} marked reviewed` : `${target.block_id} marked unreviewed`,
     });
   }
 
-  async function commitClean(text) {
-    if (!block) return;
-    setBlocks(bs => bs.map(b => b.block_id === block.block_id ? { ...b, clean_text: text } : b));
+  async function commitClean(blockId, text) {
+    const target = findBlock(blockId);
+    if (!target) return;
+    setSelectedId(target.block_id);
+    setBlocks(bs => bs.map(b => b.block_id === target.block_id ? { ...b, clean_text: text } : b));
     setEditing(false);
-    const result = await mutate(() => API.patchBlock(activeDocId, block.block_id, { clean_text: text, user: currentUser() }), { refresh: true });
+    const result = await mutate(() => API.patchBlock(activeDocId, target.block_id, { clean_text: text, user: currentUser() }), { refresh: true });
     const broke = result?.stale_spans?.length || 0;
     const relocated = result?.relocated_count || 0;
     if (broke > 0 && relocated > 0) {
@@ -714,11 +763,13 @@ function App() {
     }
   }
 
-  async function addGlossary(sel) {
-    if (!block || !sel) return;
+  async function addGlossary(blockId, sel) {
+    const target = findBlock(blockId);
+    if (!target || !sel) return;
+    setSelectedId(target.block_id);
     setRightActive("glossary");
     const result = await mutate(() => API.addGlossary(activeDocId, {
-      block_id: block.block_id,
+      block_id: target.block_id,
       start: sel.start,
       end: sel.end,
       source_term: sel.text.trim(),
@@ -726,11 +777,13 @@ function App() {
     }), { success: `Added glossary occurrence "${sel.text.trim()}"`, fail: "Add glossary failed" });
     if (result) toast("Set expected_target in the Glossary tab.", "info");
   }
-  async function addEntity(sel) {
-    if (!block || !sel) return;
+  async function addEntity(blockId, sel) {
+    const target = findBlock(blockId);
+    if (!target || !sel) return;
+    setSelectedId(target.block_id);
     setRightActive("entities");
     const result = await mutate(() => API.addEntity(activeDocId, {
-      block_id: block.block_id,
+      block_id: target.block_id,
       start: sel.start,
       end: sel.end,
       surface: sel.text.trim(),
@@ -999,8 +1052,11 @@ function App() {
           errors={errors}
           onOpenProjectSource={() => setView("project")} />
         <CenterEditor block={block} docInfo={docInfo} reviewed={!!review.blocks?.[selectedId]?.reviewed} spans={spans}
-          editing={editing} onEdit={() => setEditing(true)} onCommitClean={commitClean} onCancelEdit={() => setEditing(false)}
-          onChangeType={changeType} onToggleOpening={toggleOpening} onToggleFlag={toggleFlag} onMarkReviewed={markReviewed}
+          editing={editing} mode={centerMode} onModeChange={setCenterMode}
+          chapter={activeChapter} chapterBlocks={chapterBlocks} review={review} selectedId={selectedId}
+          getSpansForBlock={getSpansForBlock} onSelectBlock={selectBlock} onNextUnreviewed={nextUnreviewedBlock}
+          onEdit={() => setEditing(true)} onCommitClean={commitClean} onCancelEdit={() => setEditing(false)}
+          onChangeType={changeType} onToggleOpening={() => toggleOpening(selectedId)} onToggleFlag={(flag) => toggleFlag(flag, selectedId)} onMarkReviewed={markReviewed}
           onAddGlossary={addGlossary} onAddEntity={addEntity} />
         <RightPanel active={rightActive} onSetActive={setRightActive} counts={rpCounts}
           ctx={{ terms: blockTerms, entities: blockEntities, allEntities: entities, block, summary, references, errors, stats, freezeReasons,

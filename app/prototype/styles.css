@@ -297,6 +297,11 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
    ============================================================ */
 .ed-toolbar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px 10px; flex-wrap: wrap; min-height: 42px; padding: 7px 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
 .ed-tb-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mode-toggle { display: inline-flex; align-items: center; padding: 2px; border: 1px solid var(--border-2); border-radius: var(--r-sm); background: var(--panel-2); }
+.mode-btn { height: 22px; padding: 0 8px; border: 0; border-radius: 4px; background: transparent; color: var(--ink-3); font-size: 11px; font-weight: 600; }
+.mode-btn:hover { background: var(--panel-3); }
+.mode-btn.on { background: var(--panel); color: var(--accent-ink); box-shadow: 0 1px 2px rgba(15,23,42,.08); }
+.toolbar-chapter-meta { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--ink-4); font-family: var(--font-mono); }
 .dd { position: relative; }
 .dd-btn { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; background: var(--panel); border: 1px solid var(--border-2); border-radius: var(--r-sm); }
 .dd-btn:hover { background: var(--panel-3); }
@@ -339,6 +344,7 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 .fh-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 
 .src-text { font-size: 15px; line-height: 1.65; color: var(--ink-3); background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--r-md); padding: 13px 15px; position: relative; user-select: text; }
+.src-text.compact { font-size: 13px; line-height: 1.55; padding: 10px 12px; }
 
 .clean-text { font-size: 15px; line-height: 1.7; color: var(--ink); background: var(--panel); border: 1px solid var(--border-2); border-radius: var(--r-md); padding: 13px 15px; position: relative; white-space: pre-wrap; cursor: text; }
 .clean-text:hover { border-color: #cfd3d8; }
@@ -352,6 +358,24 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 .clean-hint { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--ink-4); }
 .clean-hint .hint-keys { margin-left: auto; display: inline-flex; align-items: center; gap: 3px; }
 .stale-warn { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: var(--red); background: var(--red-weak); padding: 2px 8px; border-radius: 999px; }
+
+.chapter-stream { max-width: 860px; margin: 0 auto; padding: 18px 24px 70px; display: flex; flex-direction: column; gap: 12px; }
+.chapter-block-row { position: relative; display: flex; flex-direction: column; gap: 9px; background: var(--panel); border: 1px solid var(--border); border-left: 3px solid transparent; border-radius: var(--r-md); padding: 10px 12px 12px; box-shadow: 0 1px 1px rgba(15,23,42,.02); }
+.chapter-block-row:hover { border-color: var(--border-2); border-left-color: var(--border-2); }
+.chapter-block-row.active { border-left-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); }
+.chapter-block-row.reviewed { background: #fbfcfd; }
+.cbr-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.cbr-meta { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.cbr-id { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--ink-3); }
+.cbr-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+.btn.ghost { background: transparent; }
+.mini-badge { display: inline-flex; align-items: center; gap: 4px; height: 19px; padding: 0 6px; border-radius: 999px; font-size: 10.5px; font-weight: 600; }
+.mini-badge.good { color: var(--green); background: var(--green-weak); }
+.mini-badge.bad { color: var(--red); background: var(--red-weak); }
+.chapter-source { display: flex; flex-direction: column; gap: 6px; }
+.field-head.compact { gap: 7px; }
+.chapter-block-row .clean-text { font-size: 14px; line-height: 1.65; padding: 11px 12px; }
+.chapter-block-row .clean-edit { min-height: 100px; font-size: 13px; line-height: 1.65; padding: 11px 12px; }
 
 .sel-pop { position: absolute; z-index: 30; display: flex; align-items: center; background: #1f2429; border-radius: 7px; box-shadow: var(--shadow-pop); padding: 3px; animation: pop-in .1s ease; white-space: nowrap; }
 .sel-pop-btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border: 0; background: none; color: #e8eaec; font-size: 12px; font-weight: 500; line-height: 1; border-radius: 5px; white-space: nowrap; flex: 0 0 auto; }

@@ -1,4 +1,4 @@
-/* ===== CENTER: block editor with read-only EN, editable clean_text, selection→annotate ===== */
+/* ===== CENTER: block editor + continuous chapter stream ===== */
 
 /* compute char offsets of current selection within a container element */
 function selectionOffsets(container) {
@@ -30,13 +30,39 @@ function segmentize(text, spans) {
   return segs;
 }
 
-function EditorToolbar({ block, reviewed, onChangeType, onToggleOpening, onToggleFlag, onMarkReviewed }) {
+function ModeToggle({ mode, onModeChange }) {
+  return (
+    <div className="mode-toggle" role="group" aria-label="Center view mode">
+      {["block", "chapter"].map(item => (
+        <button
+          key={item}
+          className={"mode-btn" + (mode === item ? " on" : "")}
+          onClick={() => onModeChange(item)}
+        >
+          {item === "block" ? "Block" : "Chapter"}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function EditorToolbar({
+  block, reviewed, mode, onModeChange, chapterTitle, chapterCount, onNextUnreviewed,
+  onChangeType, onToggleOpening, onToggleFlag, onMarkReviewed
+}) {
   const [typeOpen, setTypeOpen] = React.useState(false);
   const [flagOpen, setFlagOpen] = React.useState(false);
-  const flags = block.quality_flags.filter(f => f !== "ok");
+  const qualityFlags = block.quality_flags || [];
+  const flags = qualityFlags.filter(f => f !== "ok");
   return (
     <div className="ed-toolbar">
       <div className="ed-tb-left">
+        <ModeToggle mode={mode} onModeChange={onModeChange} />
+
+        <span className="toolbar-chapter-meta">
+          {mode === "chapter" ? `${chapterTitle || block.chapter_id} · ${chapterCount || 0} blocks` : block.block_id}
+        </span>
+
         {/* block_type dropdown */}
         <div className="dd">
           <button className="dd-btn" onClick={() => { setTypeOpen(o => !o); setFlagOpen(false); }}>
@@ -77,7 +103,7 @@ function EditorToolbar({ block, reviewed, onChangeType, onToggleOpening, onToggl
             <div className="dd-menu wide">
               <div className="dd-menu-head">quality_flags</div>
               {DATA.QUALITY_FLAGS.map(f => {
-                const on = f === "ok" ? flags.length === 0 : block.quality_flags.includes(f);
+                const on = f === "ok" ? flags.length === 0 : qualityFlags.includes(f);
                 return (
                   <button key={f} className={"dd-check" + (on ? " on" : "")} onClick={() => onToggleFlag(f)}>
                     <span className="dd-box">{on && <Ic.checkSmall size={10} />}</span>
@@ -91,6 +117,11 @@ function EditorToolbar({ block, reviewed, onChangeType, onToggleOpening, onToggl
       </div>
 
       <div className="ed-tb-right">
+        {mode === "chapter" && (
+          <button className="btn sm" onClick={onNextUnreviewed}>
+            <Ic.arrowRight size={13} />Next unreviewed
+          </button>
+        )}
         <button className={"btn sm reviewed-btn" + (reviewed ? " is-on" : "")} onClick={onMarkReviewed}>
           <Ic.checkCircle size={13} />{reviewed ? "Reviewed" : "Mark reviewed"}
         </button>
@@ -120,7 +151,7 @@ function MetaBar({ block, docInfo }) {
   );
 }
 
-function SelectionPopover({ rect, onGlossary, onEntity, onClose }) {
+function SelectionPopover({ rect, onGlossary, onEntity }) {
   if (!rect) return null;
   return (
     <div
@@ -139,18 +170,154 @@ function SelectionPopover({ rect, onGlossary, onEntity, onClose }) {
   );
 }
 
-function CenterEditor({
-  block, docInfo, reviewed, spans, editing, onEdit, onCommitClean, onCancelEdit,
-  onChangeType, onToggleOpening, onToggleFlag, onMarkReviewed,
-  onAddGlossary, onAddEntity,
+function CleanTextSurface({ block, spans = [], editing, draft, onDraft, onMouseUp, cleanRef, taRef, onAddGlossary, onAddEntity, selection }) {
+  if (editing) {
+    return (
+      <textarea className="clean-edit mono" ref={taRef} value={draft}
+        onChange={e => onDraft(e.target.value)} spellCheck={false} />
+    );
+  }
+  return (
+    <div className="clean-text" ref={cleanRef} onMouseUp={onMouseUp}>
+      {segmentize(block.clean_text || "", spans).map((seg, i) =>
+        seg.span
+          ? <mark key={i} className={"hl hl-" + seg.span.kind + (seg.span.stale ? " hl-stale" : "")}
+              title={seg.span.label}>{seg.text}</mark>
+          : <span key={i}>{seg.text}</span>
+      )}
+      <SelectionPopover rect={selection?.rect}
+        onGlossary={onAddGlossary}
+        onEntity={onAddEntity} />
+    </div>
+  );
+}
+
+function BlockRow({
+  block, spans, reviewed, active, onSelectBlock, onCommitClean,
+  onMarkReviewed, onAddGlossary, onAddEntity
 }) {
   const cleanRef = React.useRef(null);
   const taRef = React.useRef(null);
-  const [sel, setSel] = React.useState(null); // {start,end,text,rect}
-  const [draft, setDraft] = React.useState(block.clean_text);
+  const [sel, setSel] = React.useState(null);
+  const [editing, setEditing] = React.useState(false);
+  const [sourceOpen, setSourceOpen] = React.useState(false);
+  const [draft, setDraft] = React.useState(block.clean_text || "");
 
-  React.useEffect(() => { setDraft(block.clean_text); }, [block.block_id, block.clean_text]);
+  React.useEffect(() => { setDraft(block.clean_text || ""); }, [block.block_id, block.clean_text]);
+  React.useEffect(() => { if (editing && taRef.current) taRef.current.focus(); }, [editing]);
+
+  function clearSelection() {
+    setSel(null);
+    const current = window.getSelection();
+    if (current) current.removeAllRanges();
+  }
+
+  function handleMouseUp() {
+    if (editing) return;
+    const c = cleanRef.current;
+    if (!c) return;
+    const off = selectionOffsets(c);
+    if (!off) { setSel(null); return; }
+    onSelectBlock(block.block_id);
+    const r = window.getSelection().getRangeAt(0).getBoundingClientRect();
+    const host = c.getBoundingClientRect();
+    const popoverWidth = 258;
+    const top = r.bottom - host.top + 8;
+    const left = Math.min(
+      Math.max(8, r.left - host.left + r.width / 2 - popoverWidth / 2),
+      Math.max(8, c.clientWidth - popoverWidth - 8)
+    );
+    setSel({ ...off, rect: { top, left } });
+  }
+
+  const staleCount = (spans || []).filter(s => s.stale).length;
+  const flags = (block.quality_flags || []).filter(f => f !== "ok");
+
+  return (
+    <article
+      className={"chapter-block-row" + (active ? " active" : "") + (reviewed ? " reviewed" : "")}
+      data-block-id={block.block_id}
+      onMouseDown={() => onSelectBlock(block.block_id)}
+    >
+      <div className="cbr-head">
+        <div className="cbr-meta">
+          <span className="mono cbr-id">{block.block_id}</span>
+          <span className={"tag tag-" + block.block_type}>{block.block_type}</span>
+          {reviewed && <span className="mini-badge good"><Ic.check size={10} />reviewed</span>}
+          {flags.map(f => <span key={f} className="mini-badge bad"><Ic.flag size={10} />{f}</span>)}
+          {staleCount > 0 && (
+            <span className="stale-warn tip" data-tip="A glossary/entity span no longer matches this block text. Re-tag this row.">
+              <Ic.alert size={11} />{staleCount} span{staleCount > 1 ? "s" : ""} need re-tag
+            </span>
+          )}
+        </div>
+        <div className="cbr-actions">
+          <button className="btn sm ghost" onClick={e => { e.stopPropagation(); setSourceOpen(v => !v); }}>
+            <Ic.eye size={12} />{sourceOpen ? "Hide source" : "Source"}
+          </button>
+          {!editing ? (
+            <button className="btn sm" onClick={e => { e.stopPropagation(); clearSelection(); setEditing(true); }}>
+              <Ic.pencil size={11} />Edit
+            </button>
+          ) : (
+            <>
+              <button className="btn sm" onClick={e => { e.stopPropagation(); setDraft(block.clean_text || ""); setEditing(false); }}>Cancel</button>
+              <button className="btn sm primary" onClick={e => { e.stopPropagation(); setEditing(false); onCommitClean(block.block_id, draft); }}>
+                <Ic.check size={11} />Save
+              </button>
+            </>
+          )}
+          <button className={"btn sm reviewed-btn" + (reviewed ? " is-on" : "")}
+            onClick={e => { e.stopPropagation(); onMarkReviewed(block.block_id); }}>
+            <Ic.checkCircle size={13} />{reviewed ? "Reviewed" : "Review"}
+          </button>
+        </div>
+      </div>
+
+      {sourceOpen && (
+        <div className="chapter-source">
+          <div className="field-head compact">
+            <span className="fh-title"><Ic.lock size={11} />Source (EN)</span>
+            <span className="fh-meta">read-only · source_text</span>
+          </div>
+          <div className="src-text compact">{block.source_text || ""}</div>
+        </div>
+      )}
+
+      <CleanTextSurface
+        block={block}
+        spans={spans}
+        editing={editing}
+        draft={draft}
+        onDraft={setDraft}
+        cleanRef={cleanRef}
+        taRef={taRef}
+        selection={sel}
+        onMouseUp={handleMouseUp}
+        onAddGlossary={() => { onAddGlossary(block.block_id, sel); clearSelection(); }}
+        onAddEntity={() => { onAddEntity(block.block_id, sel); clearSelection(); }}
+      />
+    </article>
+  );
+}
+
+function SingleBlockView({
+  block, docInfo, reviewed, spans, editing, onEdit, onCommitClean, onCancelEdit,
+  onAddGlossary, onAddEntity
+}) {
+  const cleanRef = React.useRef(null);
+  const taRef = React.useRef(null);
+  const [sel, setSel] = React.useState(null);
+  const [draft, setDraft] = React.useState(block.clean_text || "");
+
+  React.useEffect(() => { setDraft(block.clean_text || ""); }, [block.block_id, block.clean_text]);
   React.useEffect(() => { if (editing && taRef.current) { taRef.current.focus(); } }, [editing]);
+
+  function clearSelection() {
+    setSel(null);
+    const current = window.getSelection();
+    if (current) current.removeAllRanges();
+  }
 
   function handleMouseUp() {
     if (editing) return;
@@ -169,26 +336,21 @@ function CenterEditor({
     setSel({ ...off, rect: { top, left } });
   }
 
-  const staleCount = spans.filter(s => s.stale).length;
+  const staleCount = (spans || []).filter(s => s.stale).length;
 
   return (
-    <div className="col col-center">
-      <EditorToolbar block={block} reviewed={reviewed}
-        onChangeType={onChangeType} onToggleOpening={onToggleOpening}
-        onToggleFlag={onToggleFlag} onMarkReviewed={onMarkReviewed} />
+    <>
       <MetaBar block={block} docInfo={docInfo} />
       <div className="ed-scroll" onMouseDown={() => sel && setSel(null)}>
         <div className="ed-inner">
-          {/* SOURCE EN — read only */}
           <div className="field-block">
             <div className="field-head">
               <span className="fh-title"><Ic.lock size={11} />Source (EN)</span>
               <span className="fh-meta">read-only · source_text · extracted</span>
             </div>
-            <div className="src-text">{block.source_text}</div>
+            <div className="src-text">{block.source_text || ""}</div>
           </div>
 
-          {/* CLEAN TEXT — editable */}
           <div className="field-block">
             <div className="field-head">
               <span className="fh-title editable-title"><Ic.pencil size={11} />Clean text</span>
@@ -201,28 +363,25 @@ function CenterEditor({
                 {!editing
                   ? <button className="btn sm" onClick={() => { setSel(null); onEdit(); }}><Ic.pencil size={11} />Edit</button>
                   : <>
-                      <button className="btn sm" onClick={() => { setDraft(block.clean_text); onCancelEdit(); }}>Cancel</button>
-                      <button className="btn sm primary" onClick={() => onCommitClean(draft)}><Ic.check size={11} />Save text</button>
+                      <button className="btn sm" onClick={() => { setDraft(block.clean_text || ""); onCancelEdit(); }}>Cancel</button>
+                      <button className="btn sm primary" onClick={() => onCommitClean(block.block_id, draft)}><Ic.check size={11} />Save text</button>
                     </>}
               </span>
             </div>
 
-            {!editing ? (
-              <div className="clean-text" ref={cleanRef} onMouseUp={handleMouseUp}>
-                {segmentize(block.clean_text, spans).map((seg, i) =>
-                  seg.span
-                    ? <mark key={i} className={"hl hl-" + seg.span.kind + (seg.span.stale ? " hl-stale" : "")}
-                        title={seg.span.label}>{seg.text}</mark>
-                    : <span key={i}>{seg.text}</span>
-                )}
-                <SelectionPopover rect={sel?.rect}
-                  onGlossary={() => { onAddGlossary(sel); setSel(null); window.getSelection().removeAllRanges(); }}
-                  onEntity={() => { onAddEntity(sel); setSel(null); window.getSelection().removeAllRanges(); }} />
-              </div>
-            ) : (
-              <textarea className="clean-edit mono" ref={taRef} value={draft}
-                onChange={e => setDraft(e.target.value)} spellCheck={false} />
-            )}
+            <CleanTextSurface
+              block={block}
+              spans={spans}
+              editing={editing}
+              draft={draft}
+              onDraft={setDraft}
+              cleanRef={cleanRef}
+              taRef={taRef}
+              selection={sel}
+              onMouseUp={handleMouseUp}
+              onAddGlossary={() => { onAddGlossary(block.block_id, sel); clearSelection(); }}
+              onAddEntity={() => { onAddEntity(block.block_id, sel); clearSelection(); }}
+            />
 
             {!editing && (
               <div className="clean-hint">
@@ -233,6 +392,88 @@ function CenterEditor({
           </div>
         </div>
       </div>
+    </>
+  );
+}
+
+function ChapterStream({
+  blocks = [], selectedId, review, getSpansForBlock, onSelectBlock, onCommitClean,
+  onMarkReviewed, onAddGlossary, onAddEntity
+}) {
+  const rows = blocks || [];
+  const scrollRef = React.useRef(null);
+  React.useEffect(() => {
+    if (!selectedId || !scrollRef.current) return;
+    const row = Array.from(scrollRef.current.querySelectorAll("[data-block-id]"))
+      .find(el => el.dataset.blockId === selectedId);
+    if (row) row.scrollIntoView({ block: "nearest" });
+  }, [selectedId, rows.length]);
+
+  return (
+    <div className="ed-scroll" ref={scrollRef}>
+      <div className="chapter-stream">
+        {rows.map(row => (
+          <BlockRow
+            key={row.block_id}
+            block={row}
+            spans={getSpansForBlock(row)}
+            reviewed={!!review?.blocks?.[row.block_id]?.reviewed}
+            active={row.block_id === selectedId}
+            onSelectBlock={onSelectBlock}
+            onCommitClean={onCommitClean}
+            onMarkReviewed={onMarkReviewed}
+            onAddGlossary={onAddGlossary}
+            onAddEntity={onAddEntity}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CenterEditor({
+  block, docInfo, reviewed, spans, editing, mode, onModeChange, chapter, chapterBlocks,
+  review, selectedId, getSpansForBlock, onSelectBlock, onNextUnreviewed,
+  onEdit, onCommitClean, onCancelEdit,
+  onChangeType, onToggleOpening, onToggleFlag, onMarkReviewed,
+  onAddGlossary, onAddEntity,
+}) {
+  const chapterTitle = chapter?.title || chapter?.chapter_title || block.chapter_id;
+  const chapterCount = chapterBlocks?.length || 0;
+
+  return (
+    <div className="col col-center">
+      <EditorToolbar block={block} reviewed={reviewed} mode={mode} onModeChange={onModeChange}
+        chapterTitle={chapterTitle} chapterCount={chapterCount} onNextUnreviewed={onNextUnreviewed}
+        onChangeType={onChangeType} onToggleOpening={onToggleOpening}
+        onToggleFlag={onToggleFlag} onMarkReviewed={() => onMarkReviewed(block.block_id)} />
+
+      {mode === "chapter" ? (
+        <ChapterStream
+          blocks={chapterBlocks}
+          selectedId={selectedId}
+          review={review}
+          getSpansForBlock={getSpansForBlock}
+          onSelectBlock={onSelectBlock}
+          onCommitClean={onCommitClean}
+          onMarkReviewed={onMarkReviewed}
+          onAddGlossary={onAddGlossary}
+          onAddEntity={onAddEntity}
+        />
+      ) : (
+        <SingleBlockView
+          block={block}
+          docInfo={docInfo}
+          reviewed={reviewed}
+          spans={spans}
+          editing={editing}
+          onEdit={onEdit}
+          onCommitClean={onCommitClean}
+          onCancelEdit={onCancelEdit}
+          onAddGlossary={onAddGlossary}
+          onAddEntity={onAddEntity}
+        />
+      )}
     </div>
   );
 }
