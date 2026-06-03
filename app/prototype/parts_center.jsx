@@ -31,15 +31,20 @@ function segmentize(text, spans) {
 }
 
 function ModeToggle({ mode, onModeChange }) {
+  const items = [
+    { id: "block", label: "Block" },
+    { id: "chapter", label: "Chapter" },
+    { id: "book", label: "Book" },
+  ];
   return (
     <div className="mode-toggle" role="group" aria-label="Center view mode">
-      {["block", "chapter"].map(item => (
+      {items.map(item => (
         <button
-          key={item}
-          className={"mode-btn" + (mode === item ? " on" : "")}
-          onClick={() => onModeChange(item)}
+          key={item.id}
+          className={"mode-btn" + (mode === item.id ? " on" : "")}
+          onClick={() => onModeChange(item.id)}
         >
-          {item === "block" ? "Block" : "Chapter"}
+          {item.label}
         </button>
       ))}
     </div>
@@ -47,7 +52,7 @@ function ModeToggle({ mode, onModeChange }) {
 }
 
 function EditorToolbar({
-  block, reviewed, mode, onModeChange, chapterTitle, chapterCount, onNextUnreviewed,
+  block, reviewed, mode, onModeChange, streamLabel, streamCount, onNextUnreviewed,
   onChangeType, onToggleOpening, onToggleFlag, onMarkReviewed
 }) {
   const [typeOpen, setTypeOpen] = React.useState(false);
@@ -60,7 +65,7 @@ function EditorToolbar({
         <ModeToggle mode={mode} onModeChange={onModeChange} />
 
         <span className="toolbar-chapter-meta">
-          {mode === "chapter" ? `${chapterTitle || block.chapter_id} · ${chapterCount || 0} blocks` : block.block_id}
+          {mode === "block" ? block.block_id : `${streamLabel} · ${streamCount || 0} blocks`}
         </span>
 
         {/* block_type dropdown */}
@@ -117,7 +122,7 @@ function EditorToolbar({
       </div>
 
       <div className="ed-tb-right">
-        {mode === "chapter" && (
+        {mode !== "block" && (
           <button className="btn sm" onClick={onNextUnreviewed}>
             <Ic.arrowRight size={13} />Next unreviewed
           </button>
@@ -192,7 +197,7 @@ function CleanTextSurface({ block, spans = [], editing, draft, onDraft, onMouseU
   );
 }
 
-function BlockRow({
+function ChapterBlockRow({
   block, spans, reviewed, active, onSelectBlock, onCommitClean,
   onMarkReviewed, onAddGlossary, onAddEntity
 }) {
@@ -397,60 +402,88 @@ function SingleBlockView({
 }
 
 function ChapterStream({
-  blocks = [], selectedId, review, getSpansForBlock, onSelectBlock, onCommitClean,
+  blocks = [], chapters = [], selectedId, review, getSpansForBlock, onSelectBlock, onCommitClean,
   onMarkReviewed, onAddGlossary, onAddEntity
 }) {
   const rows = blocks || [];
+  const chapterLookup = React.useMemo(() => {
+    const map = {};
+    (chapters || []).forEach(ch => { map[ch.chapter_id] = ch; });
+    return map;
+  }, [chapters]);
+  const chapterCounts = React.useMemo(() => {
+    const map = {};
+    rows.forEach(row => { map[row.chapter_id] = (map[row.chapter_id] || 0) + 1; });
+    return map;
+  }, [rows]);
   const scrollRef = React.useRef(null);
   React.useEffect(() => {
     if (!selectedId || !scrollRef.current) return;
     const row = Array.from(scrollRef.current.querySelectorAll("[data-block-id]"))
       .find(el => el.dataset.blockId === selectedId);
-    if (row) row.scrollIntoView({ block: "nearest" });
+    if (row) row.scrollIntoView({ block: "center", behavior: "smooth" });
   }, [selectedId, rows.length]);
 
   return (
     <div className="ed-scroll" ref={scrollRef}>
       <div className="chapter-stream">
-        {rows.map(row => (
-          <BlockRow
-            key={row.block_id}
-            block={row}
-            spans={getSpansForBlock(row)}
-            reviewed={!!review?.blocks?.[row.block_id]?.reviewed}
-            active={row.block_id === selectedId}
-            onSelectBlock={onSelectBlock}
-            onCommitClean={onCommitClean}
-            onMarkReviewed={onMarkReviewed}
-            onAddGlossary={onAddGlossary}
-            onAddEntity={onAddEntity}
-          />
-        ))}
+        {rows.map((row, index) => {
+          const prev = rows[index - 1];
+          const startsChapter = index === 0 || prev?.chapter_id !== row.chapter_id;
+          const chapter = chapterLookup[row.chapter_id] || {};
+          const title = chapter.title || chapter.chapter_title || row.chapter_id;
+          const count = chapterCounts[row.chapter_id] || 0;
+          return (
+            <React.Fragment key={row.block_id}>
+              {startsChapter && (
+                <div className="chapter-divider" data-chapter-id={row.chapter_id}>
+                  <span className="chapter-divider-rule" />
+                  <span className="chapter-divider-title">{title}</span>
+                  <span className="chapter-divider-meta mono">{row.chapter_id} · {count} blocks</span>
+                </div>
+              )}
+              <ChapterBlockRow
+                block={row}
+                spans={getSpansForBlock(row)}
+                reviewed={!!review?.blocks?.[row.block_id]?.reviewed}
+                active={row.block_id === selectedId}
+                onSelectBlock={onSelectBlock}
+                onCommitClean={onCommitClean}
+                onMarkReviewed={onMarkReviewed}
+                onAddGlossary={onAddGlossary}
+                onAddEntity={onAddEntity}
+              />
+            </React.Fragment>
+          );
+        })}
       </div>
     </div>
   );
 }
 
 function CenterEditor({
-  block, docInfo, reviewed, spans, editing, mode, onModeChange, chapter, chapterBlocks,
+  block, docInfo, reviewed, spans, editing, mode, onModeChange, chapter, chapters, chapterBlocks, allBlocks,
   review, selectedId, getSpansForBlock, onSelectBlock, onNextUnreviewed,
   onEdit, onCommitClean, onCancelEdit,
   onChangeType, onToggleOpening, onToggleFlag, onMarkReviewed,
   onAddGlossary, onAddEntity,
 }) {
   const chapterTitle = chapter?.title || chapter?.chapter_title || block.chapter_id;
-  const chapterCount = chapterBlocks?.length || 0;
+  const streamBlocks = mode === "book" ? (allBlocks || []) : (chapterBlocks || []);
+  const streamLabel = mode === "book" ? (docInfo?.metadata?.title || docInfo?.doc_id || "Full book") : chapterTitle;
+  const streamCount = mode === "book" ? (allBlocks?.length || 0) : (chapterBlocks?.length || 0);
 
   return (
     <div className="col col-center">
       <EditorToolbar block={block} reviewed={reviewed} mode={mode} onModeChange={onModeChange}
-        chapterTitle={chapterTitle} chapterCount={chapterCount} onNextUnreviewed={onNextUnreviewed}
+        streamLabel={streamLabel} streamCount={streamCount} onNextUnreviewed={onNextUnreviewed}
         onChangeType={onChangeType} onToggleOpening={onToggleOpening}
         onToggleFlag={onToggleFlag} onMarkReviewed={() => onMarkReviewed(block.block_id)} />
 
-      {mode === "chapter" ? (
+      {mode !== "block" ? (
         <ChapterStream
-          blocks={chapterBlocks}
+          blocks={streamBlocks}
+          chapters={chapters}
           selectedId={selectedId}
           review={review}
           getSpansForBlock={getSpansForBlock}

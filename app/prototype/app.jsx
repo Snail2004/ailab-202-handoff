@@ -232,9 +232,12 @@ function App() {
   const [errors, setErrors] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [filters, setFilters] = useState(new Set());
-  const [rightActive, setRightActive] = useState("glossary");
+  const [rightOpenTabs, setRightOpenTabs] = useState(["glossary"]);
   const [editing, setEditing] = useState(false);
-  const [centerMode, setCenterModeState] = useState(() => localStorage.getItem(STORAGE_CENTER_MODE) || "chapter");
+  const [centerMode, setCenterModeState] = useState(() => {
+    const saved = localStorage.getItem(STORAGE_CENTER_MODE);
+    return ["block", "chapter", "book"].includes(saved) ? saved : "chapter";
+  });
   const [toasts, setToasts] = useState([]);
   const [modal, setModal] = useState(null);
   const [dirty, setDirty] = useState(false);
@@ -309,6 +312,18 @@ function App() {
   function setCenterMode(mode) {
     setCenterModeState(mode);
     localStorage.setItem(STORAGE_CENTER_MODE, mode);
+  }
+
+  function toggleRightTab(tabId) {
+    setRightOpenTabs(tabs => (
+      tabs.includes(tabId)
+        ? tabs.filter(id => id !== tabId)
+        : [...tabs, tabId]
+    ));
+  }
+
+  function openRightTab(tabId) {
+    setRightOpenTabs(tabs => tabs.includes(tabId) ? tabs : [...tabs, tabId]);
   }
 
   const touchStart = useCallback(() => {
@@ -767,7 +782,7 @@ function App() {
     const target = findBlock(blockId);
     if (!target || !sel) return;
     setSelectedId(target.block_id);
-    setRightActive("glossary");
+    openRightTab("glossary");
     const result = await mutate(() => API.addGlossary(activeDocId, {
       block_id: target.block_id,
       start: sel.start,
@@ -781,7 +796,7 @@ function App() {
     const target = findBlock(blockId);
     if (!target || !sel) return;
     setSelectedId(target.block_id);
-    setRightActive("entities");
+    openRightTab("entities");
     const result = await mutate(() => API.addEntity(activeDocId, {
       block_id: target.block_id,
       start: sel.start,
@@ -906,7 +921,7 @@ function App() {
   }
 
   async function runValidate() {
-    setRightActive("validate");
+    openRightTab("validate");
     try {
       const report = await API.validate(activeDocId, { user: currentUser() });
       const items = normalizeErrors(report);
@@ -1053,12 +1068,12 @@ function App() {
           onOpenProjectSource={() => setView("project")} />
         <CenterEditor block={block} docInfo={docInfo} reviewed={!!review.blocks?.[selectedId]?.reviewed} spans={spans}
           editing={editing} mode={centerMode} onModeChange={setCenterMode}
-          chapter={activeChapter} chapterBlocks={chapterBlocks} review={review} selectedId={selectedId}
+          chapter={activeChapter} chapters={chapters} chapterBlocks={chapterBlocks} allBlocks={blocks} review={review} selectedId={selectedId}
           getSpansForBlock={getSpansForBlock} onSelectBlock={selectBlock} onNextUnreviewed={nextUnreviewedBlock}
           onEdit={() => setEditing(true)} onCommitClean={commitClean} onCancelEdit={() => setEditing(false)}
           onChangeType={changeType} onToggleOpening={() => toggleOpening(selectedId)} onToggleFlag={(flag) => toggleFlag(flag, selectedId)} onMarkReviewed={markReviewed}
           onAddGlossary={addGlossary} onAddEntity={addEntity} />
-        <RightPanel active={rightActive} onSetActive={setRightActive} counts={rpCounts}
+        <RightPanel openTabs={rightOpenTabs} onToggleTab={toggleRightTab} counts={rpCounts}
           ctx={{ terms: blockTerms, entities: blockEntities, allEntities: entities, block, summary, references, errors, stats, freezeReasons,
             onDeleteTerm: deleteTerm, onDeleteEntity: deleteEntity, onUpdateTerm: updateTerm, onUpdateEntity: updateEntity, onUpdateSummary: updateSummary,
             onUpdateReference: updateReference, onCreateReference: createReferenceDraft, onSaveDraft: saveDraft, onMarkReviewedReference: markReviewedReference,

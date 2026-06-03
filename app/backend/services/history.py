@@ -1,3 +1,5 @@
+import base64
+import gzip
 import json
 import uuid
 from collections.abc import Callable
@@ -10,11 +12,14 @@ from services.audit_log import log_event
 from services.dataset_io import atomic_write_text, read_json, write_json_atomic
 
 
-# Session-scale snapshot undo. This is intentionally simple for MVP and is not
-# optimized for very long books; future work should move to diff-based history.
+# Session-scale snapshot undo. This remains file-snapshot based for safety, but
+# each history event stores only the tracked files changed by that mutation so
+# long books can keep more than one undo step.
 HISTORY_LIMIT = 25
-MAX_HISTORY_BYTES = 5_000_000
+MAX_HISTORY_BYTES = 20_000_000
 HISTORY_VERSION = 1
+COMPRESS_TEXT_BYTES = 16_384
+COMPRESSED_ENCODING = "gzip+base64"
 
 
 class HistoryError(ValueError):
@@ -89,22 +94,44 @@ def _safe_project_file(project_path: Path, rel_path: str) -> Path:
     return path
 
 
-def snapshot_files(project_path: Path) -> dict[str, str | None]:
-    snapshot: dict[str, str | None] = {}
+def _encode_content(content: str) -> str | dict[str, str]:
+    raw = content.encode("utf-8")
+    if len(raw) < COMPRESS_TEXT_BYTES:
+        return content
+    compressed = gzip.compress(raw, compresslevel=6, mtime=0)
+    return {
+        "__history_encoding": COMPRESSED_ENCODING,
+        "data": base64.b64encode(compressed).decode("ascii"),
+    }
+
+
+def _decode_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict) and content.get("__history_encoding") == COMPRESSED_ENCODING:
+        data = content.get("data")
+        if not isinstance(data, str):
+            raise HistoryError("invalid_history_content", "Compressed history content is missing data.", 500)
+        return gzip.decompress(base64.b64decode(data.encode("ascii"))).decode("utf-8")
+    raise HistoryError("invalid_history_content", "History content has an unsupported encoding.", 500)
+
+
+def snapshot_files(project_path: Path) -> dict[str, Any | None]:
+    snapshot: dict[str, Any | None] = {}
     for rel in _tracked_rel_paths():
         path = _safe_project_file(project_path, rel)
-        snapshot[rel] = path.read_text(encoding="utf-8") if path.exists() else None
+        snapshot[rel] = _encode_content(path.read_text(encoding="utf-8")) if path.exists() else None
     return snapshot
 
 
-def _restore_files(project_path: Path, files: dict[str, str | None]) -> None:
+def _restore_files(project_path: Path, files: dict[str, Any | None]) -> None:
     for rel, content in files.items():
         path = _safe_project_file(project_path, rel)
         if content is None:
             if path.exists():
                 path.unlink()
             continue
-        atomic_write_text(path, content)
+        atomic_write_text(path, _decode_content(content))
     _regenerate_derived_files(project_path)
 
 
@@ -161,6 +188,10 @@ def record_history(
     if before == after:
         return result
 
+    changed_rels = sorted(rel for rel in set(before) | set(after) if before.get(rel) != after.get(rel))
+    before_changed = {rel: before.get(rel) for rel in changed_rels}
+    after_changed = {rel: after.get(rel) for rel in changed_rels}
+
     data = _read_history(project_path)
     event = {
         "id": f"hist_{uuid.uuid4().hex[:12]}",
@@ -169,8 +200,8 @@ def record_history(
         "label": label,
         "action": action,
         "target": target or {},
-        "before_files": before,
-        "after_files": after,
+        "before_files": before_changed,
+        "after_files": after_changed,
     }
     data.setdefault("undo", []).append(event)
     data["redo"] = []

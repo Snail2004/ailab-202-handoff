@@ -1,4 +1,4 @@
-/* ===== RIGHT PANEL: accordion of 6 tabs, one expanded at a time ===== */
+/* ===== RIGHT PANEL: accordion of 6 tabs, multiple sections may stay open ===== */
 
 function StatusPill({ status }) {
   const map = {
@@ -202,6 +202,10 @@ function SummaryTab({ summary, entities, onUpdateSummary }) {
   const safe = summary || {};
   return (
     <div className="tab-body">
+      <div className="ref-explain">
+        <Ic.book size={12} />
+        <span><b>Chapter-level.</b> This summary applies to every block in this chapter; it only changes when the active block moves to another chapter.</span>
+      </div>
       <div className="sum-meta">
         <span className="lockfield"><span className="lf-k">chapter</span><span className="lf-v">{safe.chapter_id || "-"}</span></span>
         <span className="lockfield"><span className="lf-k">conf</span><span className="lf-v">{Number(safe.confidence || 0).toFixed(2)}</span></span>
@@ -238,11 +242,14 @@ function SummaryTab({ summary, entities, onUpdateSummary }) {
 function ReferenceTab({ refs, block, onUpdateReference, onCreateReference, onSaveDraft, onMarkReviewed, onLockReference }) {
   const blockRef = refs.find(r => r.block_id === block.block_id);
   const [newReference, setNewReference] = React.useState({ reference_vi: "", source: "human", ai_model: "" });
+  React.useEffect(() => {
+    setNewReference({ reference_vi: "", source: "human", ai_model: "" });
+  }, [block.block_id]);
   return (
     <div className="tab-body">
       <div className="ref-explain">
         <Ic.layers size={12} />
-        <span><b>Draft</b> stays in working state. Only <b>Reviewed</b> or <b>Locked</b> references are freeze-eligible.</span>
+        <span><b>Block-level.</b> Current block: <span className="mono">{block.block_id}</span>. Draft stays in working state; only <b>Reviewed</b> or <b>Locked</b> references are freeze-eligible.</span>
       </div>
       {!blockRef ? (
         <div className="ref-card status-draft">
@@ -423,17 +430,18 @@ const TABS = [
   { id: "progress", label: "Progress", icon: Ic.layers },
 ];
 
-function RightPanel({ active, onSetActive, counts, ctx }) {
+function RightPanel({ openTabs, onToggleTab, counts, ctx }) {
+  const openSet = new Set(openTabs || []);
   return (
     <div className="col col-right">
       <div className="rp-accordion">
         {TABS.map(t => {
-          const open = active === t.id;
+          const open = openSet.has(t.id);
           const I = t.icon;
           const badge = counts[t.id];
           return (
             <div key={t.id} className={"rp-sec" + (open ? " open" : "")}>
-              <button className="rp-head" onClick={() => onSetActive(t.id)}>
+              <button className="rp-head" onClick={() => onToggleTab(t.id)} aria-expanded={open}>
                 <Ic.chevRight size={12} className="rp-caret" style={{ transform: open ? "rotate(90deg)" : "none" }} />
                 <I size={13} className="rp-ic" />
                 <span className="rp-label">{t.label}</span>
@@ -447,7 +455,7 @@ function RightPanel({ active, onSetActive, counts, ctx }) {
                   {t.id === "glossary" && <GlossaryTab terms={ctx.terms} onDeleteTerm={ctx.onDeleteTerm} onUpdateTerm={ctx.onUpdateTerm} />}
                   {t.id === "entities" && <EntitiesTab entities={ctx.entities} allEntities={ctx.allEntities} block={ctx.block} onUpdateEntity={ctx.onUpdateEntity} onUpdateDiscourse={ctx.onUpdateDiscourse} onDeleteEntity={ctx.onDeleteEntity} />}
                   {t.id === "summary" && <SummaryTab summary={ctx.summary} entities={ctx.allEntities} onUpdateSummary={ctx.onUpdateSummary} />}
-                  {t.id === "reference" && <ReferenceTab refs={ctx.references} block={ctx.block} onUpdateReference={ctx.onUpdateReference} onCreateReference={ctx.onCreateReference} onSaveDraft={ctx.onSaveDraft} onMarkReviewed={ctx.onMarkReviewedReference} onLockReference={ctx.onLockReference} />}
+                  {t.id === "reference" && <ReferenceTab key={ctx.block.block_id} refs={ctx.references} block={ctx.block} onUpdateReference={ctx.onUpdateReference} onCreateReference={ctx.onCreateReference} onSaveDraft={ctx.onSaveDraft} onMarkReviewed={ctx.onMarkReviewedReference} onLockReference={ctx.onLockReference} />}
                   {t.id === "validate" && <ValidateTab errors={ctx.errors} onJump={ctx.onJump} />}
                   {t.id === "progress" && <ProgressTab stats={ctx.stats} freezeReasons={ctx.freezeReasons} history={ctx.history} />}
                 </div>

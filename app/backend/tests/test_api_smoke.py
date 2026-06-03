@@ -375,6 +375,91 @@ class BackendApiSmokeTest(unittest.TestCase):
         redone = next(item for item in dataset["blocks"] if item["block_id"] == block["block_id"])
         self.assertEqual(redone["clean_text"], new_text)
 
+    def test_multi_step_undo_redo_clean_text_uses_changed_file_snapshots(self):
+        doc_id = "history_multi_step"
+        dataset = self._make_txt_project(doc_id)
+        block = next(block for block in dataset["blocks"] if block["block_type"] != "heading")
+        old_text = block["clean_text"]
+        first_text = "First persistent edit."
+        second_text = "Second persistent edit."
+
+        first = self.client.patch(f"/api/projects/{doc_id}/blocks/{block['block_id']}", json={
+            "clean_text": first_text,
+            "user": "tester",
+        })
+        self.assertEqual(first.status_code, 200)
+        second = self.client.patch(f"/api/projects/{doc_id}/blocks/{block['block_id']}", json={
+            "clean_text": second_text,
+            "user": "tester",
+        })
+        self.assertEqual(second.status_code, 200)
+
+        history_path = Path(self.tmp.name) / doc_id / "working" / "history.json"
+        history_data = json.loads(history_path.read_text(encoding="utf-8"))
+        self.assertEqual(len(history_data["undo"]), 2)
+        for event in history_data["undo"]:
+            self.assertEqual(list(event["before_files"].keys()), ["canonical/document.json"])
+            self.assertEqual(list(event["after_files"].keys()), ["canonical/document.json"])
+
+        undo_second = self.client.post(f"/api/projects/{doc_id}/undo", json={"user": "tester"})
+        self.assertEqual(undo_second.status_code, 200)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        current = next(item for item in dataset["blocks"] if item["block_id"] == block["block_id"])
+        self.assertEqual(current["clean_text"], first_text)
+        self.assertTrue(dataset["history_state"]["can_undo"])
+        self.assertTrue(dataset["history_state"]["can_redo"])
+
+        undo_first = self.client.post(f"/api/projects/{doc_id}/undo", json={"user": "tester"})
+        self.assertEqual(undo_first.status_code, 200)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        current = next(item for item in dataset["blocks"] if item["block_id"] == block["block_id"])
+        self.assertEqual(current["clean_text"], old_text)
+        self.assertFalse(dataset["history_state"]["can_undo"])
+        self.assertTrue(dataset["history_state"]["can_redo"])
+
+        redo_first = self.client.post(f"/api/projects/{doc_id}/redo", json={"user": "tester"})
+        self.assertEqual(redo_first.status_code, 200)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        current = next(item for item in dataset["blocks"] if item["block_id"] == block["block_id"])
+        self.assertEqual(current["clean_text"], first_text)
+
+        redo_second = self.client.post(f"/api/projects/{doc_id}/redo", json={"user": "tester"})
+        self.assertEqual(redo_second.status_code, 200)
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        current = next(item for item in dataset["blocks"] if item["block_id"] == block["block_id"])
+        self.assertEqual(current["clean_text"], second_text)
+
+    def test_history_compresses_large_changed_files_and_keeps_multiple_steps(self):
+        from services.history import record_history, undo
+
+        doc_id = "history_large_snapshots"
+        project_path = Path(self.tmp.name) / doc_id
+        canonical = project_path / "canonical"
+        working = project_path / "working"
+        canonical.mkdir(parents=True)
+        working.mkdir(parents=True)
+        document_path = canonical / "document.json"
+        document_path.write_text("initial", encoding="utf-8")
+
+        def write_large(label: str):
+            def operation():
+                document_path.write_text(" ".join(f"{label}_{i:05d}" for i in range(1500)), encoding="utf-8")
+            return operation
+
+        record_history(project_path, action="test", label="first large write", target={}, user="tester", operation=write_large("first"))
+        record_history(project_path, action="test", label="second large write", target={}, user="tester", operation=write_large("second"))
+
+        history_path = working / "history.json"
+        history_data = json.loads(history_path.read_text(encoding="utf-8"))
+        self.assertEqual(len(history_data["undo"]), 2)
+        self.assertEqual(history_data["undo"][0]["after_files"]["canonical/document.json"]["__history_encoding"], "gzip+base64")
+        self.assertLess(history_path.stat().st_size, 100_000)
+
+        undo(project_path, "tester")
+        self.assertIn("first_00000", document_path.read_text(encoding="utf-8"))
+        undo(project_path, "tester")
+        self.assertEqual(document_path.read_text(encoding="utf-8"), "initial")
+
     def test_undo_redo_glossary_add(self):
         doc_id = "history_glossary"
         dataset = self._make_txt_project(doc_id)

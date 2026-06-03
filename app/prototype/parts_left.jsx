@@ -71,6 +71,7 @@ const FILTERS = [
   { id: "opening", label: "Chapter opening" },
   { id: "annotation", label: "Has annotation" },
 ];
+const STORAGE_LEFT_NAV_MODE = "ailab.left_nav_mode";
 
 function FilterChips({ active, onToggle, counts }) {
   return (
@@ -87,7 +88,30 @@ function FilterChips({ active, onToggle, counts }) {
   );
 }
 
-function BlockRow({ block, reviewed, hasAnno, selected, onSelect }) {
+function SidebarModeTabs({ mode, onModeChange }) {
+  return (
+    <div className="left-mode-tabs" role="tablist" aria-label="Block navigation mode">
+      <button
+        className={"left-mode-btn" + (mode === "review" ? " on" : "")}
+        onClick={() => onModeChange("review")}
+        role="tab"
+        aria-selected={mode === "review"}
+      >
+        Review
+      </button>
+      <button
+        className={"left-mode-btn" + (mode === "preview" ? " on" : "")}
+        onClick={() => onModeChange("preview")}
+        role="tab"
+        aria-selected={mode === "preview"}
+      >
+        Preview
+      </button>
+    </div>
+  );
+}
+
+function SidebarBlockRow({ block, reviewed, hasAnno, selected, onSelect }) {
   const flagged = (block.quality_flags || []).some(f => f !== "ok");
   return (
     <button className={"blockrow" + (selected ? " sel" : "")} onClick={() => onSelect(block.block_id)}
@@ -105,7 +129,30 @@ function BlockRow({ block, reviewed, hasAnno, selected, onSelect }) {
   );
 }
 
-function ChapterTree({ chapters, blocks, review, annoSet, selectedId, onSelect }) {
+function SidebarPreviewRow({ block, reviewed, hasAnno, selected, onSelect }) {
+  const flagged = (block.quality_flags || []).some(f => f !== "ok");
+  const preview = String(block.clean_text || block.source_text || "").trim();
+  return (
+    <button
+      className={"previewrow" + (selected ? " sel" : "")}
+      onClick={() => onSelect(block.block_id)}
+      title={block.block_id}
+      aria-label={`Open block ${block.block_id}`}
+    >
+      <span className="previewrow-head">
+        <span className="previewrow-id mono">{block.block_id}</span>
+        <span className={"tag tag-" + block.block_type}>{block.block_type}</span>
+        {reviewed && <span className="previewrow-ic ok tip" data-tip="Reviewed"><Ic.checkSmall size={11} /></span>}
+        {hasAnno && <span className="previewrow-ic anno tip" data-tip="Has glossary / entity annotations"><Ic.tag size={11} /></span>}
+        {flagged && <span className="previewrow-ic bad tip" data-tip={(block.quality_flags || []).join(", ")}><Ic.flag size={11} /></span>}
+        {block.is_chapter_opening && <span className="previewrow-ic open tip" data-tip="Chapter opening"><Ic.bolt size={11} /></span>}
+      </span>
+      <span className="previewrow-text">{preview || "(empty block)"}</span>
+    </button>
+  );
+}
+
+function ChapterTree({ chapters, blocks, review, annoSet, selectedId, onSelect, mode }) {
   const [collapsed, setCollapsed] = React.useState({});
   return (
     <div className="tree">
@@ -121,8 +168,14 @@ function ChapterTree({ chapters, blocks, review, annoSet, selectedId, onSelect }
               <span className="ch-title">{ch.title}</span>
               <span className="ch-prog mono">{done}/{chBlocks.length}</span>
             </button>
-            {!isCol && chBlocks.map(b => (
-              <BlockRow key={b.block_id} block={b}
+            {!isCol && chBlocks.map(b => mode === "preview" ? (
+              <SidebarPreviewRow key={b.block_id} block={b}
+                reviewed={!!review.blocks?.[b.block_id]?.reviewed}
+                hasAnno={annoSet.has(b.block_id)}
+                selected={selectedId === b.block_id}
+                onSelect={onSelect} />
+            ) : (
+              <SidebarBlockRow key={b.block_id} block={b}
                 reviewed={!!review.blocks?.[b.block_id]?.reviewed}
                 hasAnno={annoSet.has(b.block_id)}
                 selected={selectedId === b.block_id}
@@ -136,6 +189,15 @@ function ChapterTree({ chapters, blocks, review, annoSet, selectedId, onSelect }
 }
 
 function LeftSidebar({ docInfo, projects, blocks, chapters, review, annoSet, selectedId, onSelect, onSelectProject, filters, onToggleFilter, counts, total, errors, onOpenProjectSource }) {
+  const [navMode, setNavModeState] = React.useState(() => {
+    const saved = localStorage.getItem(STORAGE_LEFT_NAV_MODE);
+    return saved === "preview" ? "preview" : "review";
+  });
+  function setNavMode(mode) {
+    setNavModeState(mode);
+    localStorage.setItem(STORAGE_LEFT_NAV_MODE, mode);
+  }
+
   return (
     <div className="col col-left">
       <ProjectSelector docId={docInfo?.doc_id} projects={projects} onSelectProject={onSelectProject} onOpenProjectSource={onOpenProjectSource} />
@@ -149,9 +211,10 @@ function LeftSidebar({ docInfo, projects, blocks, chapters, review, annoSet, sel
         <Ic.list size={12} />Blocks
         <span className="sec-count mono">{blocks.length}{blocks.length !== total ? `/${total}` : ""}</span>
       </div>
+      <SidebarModeTabs mode={navMode} onModeChange={setNavMode} />
       <div className="tree-scroll">
         <ChapterTree chapters={chapters} blocks={blocks} review={review}
-          annoSet={annoSet} selectedId={selectedId} onSelect={onSelect} />
+          annoSet={annoSet} selectedId={selectedId} onSelect={onSelect} mode={navMode} />
         {blocks.length === 0 && <div className="tree-empty">No blocks match the active filters.</div>}
       </div>
     </div>
