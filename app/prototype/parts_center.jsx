@@ -229,7 +229,7 @@ function HighlightHoverCard({ hover, linkIndex }) {
         </div>
         <div className="hl-card-title">
           <span>{entity.canonical_source || span.id}</span>
-          <span className="hl-card-arrow">-></span>
+          <span className="hl-card-arrow">-</span>
           <span>{entity.canonical_target || "target needed"}</span>
         </div>
         <div className="hl-card-grid">
@@ -271,7 +271,7 @@ function HighlightHoverCard({ hover, linkIndex }) {
         </div>
         <div className="hl-card-title">
           <span>{term.source_term || span.id}</span>
-          <span className="hl-card-arrow">-></span>
+          <span className="hl-card-arrow">-</span>
           <span>{term.expected_target || "target needed"}</span>
         </div>
         <div className="hl-card-grid">

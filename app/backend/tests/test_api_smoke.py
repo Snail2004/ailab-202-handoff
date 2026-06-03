@@ -128,6 +128,115 @@ class BackendApiSmokeTest(unittest.TestCase):
             "notes": "Synthetic API fixture.",
         }
 
+    def _annotation_fixture(self, doc_id: str) -> tuple[dict, dict, dict, dict]:
+        dataset = self._make_txt_project(
+            doc_id,
+            b"Chapter 1\n\nAlice saw Bob.\n\nAlice smiled at Bob.\n\nAlice saw Alice.",
+        )
+        chapter = dataset["chapters"][0]
+        blocks = [block for block in dataset["blocks"] if block["block_type"] != "heading"]
+        by_text = {block["clean_text"]: block for block in blocks}
+        first = by_text["Alice saw Bob."]
+        second = by_text["Alice smiled at Bob."]
+        third = by_text["Alice saw Alice."]
+        return dataset, chapter, first, second, third
+
+    def _good_annotation_candidate(self, doc_id: str, chapter_id: str, first: dict, second: dict) -> dict:
+        return {
+            "doc_id": doc_id,
+            "chapter_id": chapter_id,
+            "entity_candidates": [
+                {
+                    "existing_entity_id": None,
+                    "entity_key": "alice",
+                    "canonical_source": "Alice",
+                    "suggested_canonical_target": "Alice",
+                    "entity_type": "person",
+                    "gender": "female",
+                    "aliases_source": [],
+                    "aliases_target": [],
+                    "pronoun_policy": "",
+                    "mentions": [
+                        {
+                            "block_id": first["block_id"],
+                            "surface": "Alice",
+                            "left_context": "",
+                            "right_context": " saw",
+                        },
+                        {
+                            "block_id": second["block_id"],
+                            "surface": "Alice",
+                            "left_context": "",
+                            "right_context": " smiled",
+                        },
+                    ],
+                    "confidence": 0.95,
+                },
+                {
+                    "existing_entity_id": None,
+                    "entity_key": "bob",
+                    "canonical_source": "Bob",
+                    "suggested_canonical_target": "Bob",
+                    "entity_type": "person",
+                    "gender": "male",
+                    "aliases_source": [],
+                    "aliases_target": [],
+                    "pronoun_policy": "",
+                    "mentions": [
+                        {
+                            "block_id": first["block_id"],
+                            "surface": "Bob",
+                            "left_context": "saw ",
+                            "right_context": ".",
+                        },
+                        {
+                            "block_id": second["block_id"],
+                            "surface": "Bob",
+                            "left_context": "at ",
+                            "right_context": ".",
+                        },
+                    ],
+                    "confidence": 0.95,
+                },
+            ],
+            "glossary_candidates": [
+                {
+                    "existing_term_id": None,
+                    "term_key": "smiled",
+                    "source_term": "smiled",
+                    "suggested_expected_target": "mim cuoi",
+                    "suggested_allowed_variants": ["smiled"],
+                    "suggested_forbidden_variants": [],
+                    "occurrences": [
+                        {
+                            "block_id": second["block_id"],
+                            "surface": "smiled",
+                            "left_context": "Alice ",
+                            "right_context": " at",
+                        }
+                    ],
+                    "confidence": 0.9,
+                }
+            ],
+            "discourse_candidates": [
+                {
+                    "block_id": first["block_id"],
+                    "speaker_ref": "alice",
+                    "addressee_ref": "bob",
+                    "confidence": 0.8,
+                }
+            ],
+            "summary_candidate": {
+                "summary_source": "Alice sees Bob and smiles at him.",
+                "characters_present_refs": ["alice", "bob"],
+                "setting": "A simple test scene",
+                "emotional_tone": "plain",
+                "motifs": ["meeting"],
+                "confidence": 0.85,
+            },
+            "confidence": 0.9,
+        }
+
     def _minimal_epub(self, opf: str, files: dict[str, str]) -> BytesIO:
         epub = BytesIO()
         with ZipFile(epub, "w") as zf:
@@ -318,6 +427,173 @@ class BackendApiSmokeTest(unittest.TestCase):
         report = self._extraction_report(doc_id)
         self.assertNotIn("normalized_structure", report)
         self.assertFalse(self._project_root(doc_id).joinpath("working", "normalized", "candidate_parts.json").exists())
+
+    def test_annotation_input_resolve_and_apply(self):
+        doc_id = "annotation_apply"
+        _, chapter, first, second, _third = self._annotation_fixture(doc_id)
+        chapter_id = chapter["chapter_id"]
+
+        annotation_input = self.client.post(f"/api/projects/{doc_id}/annotate/input", json={
+            "chapter_id": chapter_id,
+            "user": "tester",
+        })
+        self.assertEqual(annotation_input.status_code, 201)
+        input_payload = annotation_input.get_json()["data"]
+        self.assertEqual(input_payload["chapter_id"], chapter_id)
+        self.assertEqual(len(input_payload["blocks"]), 4)
+        self.assertTrue(self._project_root(doc_id).joinpath("working", "annotation", f"{chapter_id}_input.json").exists())
+
+        missing_candidate = self.client.get(f"/api/projects/{doc_id}/annotate/candidate?chapter_id={chapter_id}")
+        self.assertEqual(missing_candidate.status_code, 404)
+
+        candidate = self._good_annotation_candidate(doc_id, chapter_id, first, second)
+        resolved = self.client.post(f"/api/projects/{doc_id}/annotate/resolve", json={
+            "candidate": candidate,
+            "user": "tester",
+        })
+        self.assertEqual(resolved.status_code, 201)
+        preview = resolved.get_json()["data"]
+        self.assertEqual([item["status"] for item in preview["entities"]], ["ok", "ok"])
+        self.assertEqual(preview["glossary"][0]["status"], "ok")
+        self.assertEqual(preview["discourse"][0]["speaker_entity_id"], "e_001")
+        self.assertTrue(self._project_root(doc_id).joinpath("working", "annotation", f"{chapter_id}_resolved.json").exists())
+
+        loaded_candidate = self.client.get(f"/api/projects/{doc_id}/annotate/candidate?chapter_id={chapter_id}")
+        self.assertEqual(loaded_candidate.status_code, 200)
+        self.assertEqual(loaded_candidate.get_json()["data"]["candidate"]["doc_id"], doc_id)
+        self.assertEqual(loaded_candidate.get_json()["data"]["candidate"]["chapter_id"], chapter_id)
+
+        applied = self.client.post(f"/api/projects/{doc_id}/annotate/apply", json={
+            "chapter_id": chapter_id,
+            "approved": True,
+            "accept_all_resolved": True,
+            "user": "tester",
+        })
+        self.assertEqual(applied.status_code, 201, applied.get_json())
+        counts = applied.get_json()["data"]["counts"]
+        self.assertEqual(counts["entities"], 2)
+        self.assertEqual(counts["entity_mentions"], 4)
+        self.assertEqual(counts["glossary"], 1)
+        self.assertEqual(counts["occurrences"], 1)
+        self.assertEqual(counts["discourse"], 1)
+        self.assertEqual(counts["summary"], 1)
+
+        entities = self._jsonl_rows(doc_id, "entities.jsonl")
+        glossary = self._jsonl_rows(doc_id, "glossary.jsonl")
+        summaries = self._jsonl_rows(doc_id, "chapter_summaries.jsonl")
+        self.assertEqual(len(entities), 2)
+        self.assertEqual(len(glossary), 1)
+        self.assertEqual(len(glossary[0]["occurrences"]), 1)
+        self.assertEqual(glossary[0]["status"], "candidate")
+        self.assertEqual(summaries[0]["characters_present"], ["e_001", "e_002"])
+
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        block = next(item for item in dataset["blocks"] if item["block_id"] == first["block_id"])
+        self.assertEqual(block["discourse"]["speaker_entity_id"], "e_001")
+        self.assertEqual(block["discourse"]["addressee_entity_id"], "e_002")
+        self.assertIn("e_001", block["annotations"]["entity_mentions"])
+        self.assertIn("g_001", next(item for item in dataset["blocks"] if item["block_id"] == second["block_id"])["annotations"]["term_occurrences"])
+        self._assert_project_valid(doc_id)
+
+    def test_annotation_ambiguous_surface_is_not_auto_applied(self):
+        doc_id = "annotation_ambiguous"
+        _dataset, chapter, _first, _second, third = self._annotation_fixture(doc_id)
+        candidate = {
+            "doc_id": doc_id,
+            "chapter_id": chapter["chapter_id"],
+            "entity_candidates": [
+                {
+                    "entity_key": "alice",
+                    "canonical_source": "Alice",
+                    "suggested_canonical_target": "Alice",
+                    "entity_type": "person",
+                    "mentions": [{"block_id": third["block_id"], "surface": "Alice"}],
+                    "confidence": 0.6,
+                }
+            ],
+        }
+        resolved = self.client.post(f"/api/projects/{doc_id}/annotate/resolve", json={"candidate": candidate})
+        self.assertEqual(resolved.status_code, 201)
+        preview = resolved.get_json()["data"]
+        self.assertEqual(preview["entities"][0]["status"], "needs_review")
+        self.assertEqual(preview["entities"][0]["mentions"][0]["status"], "ambiguous")
+
+        applied = self.client.post(f"/api/projects/{doc_id}/annotate/apply", json={
+            "chapter_id": chapter["chapter_id"],
+            "approved": True,
+            "accept_all_resolved": True,
+        })
+        self.assertEqual(applied.status_code, 201)
+        self.assertEqual(applied.get_json()["data"]["counts"]["entities"], 0)
+        self.assertEqual(self._jsonl_rows(doc_id, "entities.jsonl"), [])
+
+    def test_annotation_dual_tag_conflict_blocks_glossary_auto_apply(self):
+        doc_id = "annotation_dual_tag"
+        _dataset, chapter, first, _second, _third = self._annotation_fixture(doc_id)
+        candidate = {
+            "doc_id": doc_id,
+            "chapter_id": chapter["chapter_id"],
+            "entity_candidates": [
+                {
+                    "entity_key": "alice",
+                    "canonical_source": "Alice",
+                    "suggested_canonical_target": "Alice",
+                    "entity_type": "person",
+                    "mentions": [{
+                        "block_id": first["block_id"],
+                        "surface": "Alice",
+                        "right_context": " saw",
+                    }],
+                }
+            ],
+            "glossary_candidates": [
+                {
+                    "term_key": "alice",
+                    "source_term": "Alice",
+                    "suggested_expected_target": "Alice",
+                    "occurrences": [{
+                        "block_id": first["block_id"],
+                        "surface": "Alice",
+                        "right_context": " saw",
+                    }],
+                }
+            ],
+        }
+        resolved = self.client.post(f"/api/projects/{doc_id}/annotate/resolve", json={"candidate": candidate})
+        self.assertEqual(resolved.status_code, 201)
+        preview = resolved.get_json()["data"]
+        self.assertEqual(preview["entities"][0]["status"], "ok")
+        self.assertEqual(preview["glossary"][0]["status"], "needs_review")
+        self.assertEqual(preview["glossary"][0]["occurrences"][0]["status"], "conflict_dual_tag")
+
+        applied = self.client.post(f"/api/projects/{doc_id}/annotate/apply", json={
+            "chapter_id": chapter["chapter_id"],
+            "approved": True,
+            "accept_all_resolved": True,
+        })
+        self.assertEqual(applied.status_code, 201)
+        self.assertEqual(applied.get_json()["data"]["counts"]["entities"], 1)
+        self.assertEqual(applied.get_json()["data"]["counts"]["glossary"], 0)
+
+    def test_annotation_apply_requires_resolve_after_clean_text_drift(self):
+        doc_id = "annotation_drift"
+        _dataset, chapter, first, second, _third = self._annotation_fixture(doc_id)
+        candidate = self._good_annotation_candidate(doc_id, chapter["chapter_id"], first, second)
+        resolved = self.client.post(f"/api/projects/{doc_id}/annotate/resolve", json={"candidate": candidate})
+        self.assertEqual(resolved.status_code, 201)
+        patch = self.client.patch(f"/api/projects/{doc_id}/blocks/{second['block_id']}", json={
+            "clean_text": "Alice smiled at Bob, then left.",
+            "user": "tester",
+        })
+        self.assertEqual(patch.status_code, 200)
+
+        applied = self.client.post(f"/api/projects/{doc_id}/annotate/apply", json={
+            "chapter_id": chapter["chapter_id"],
+            "approved": True,
+            "accept_all_resolved": True,
+        })
+        self.assertEqual(applied.status_code, 409)
+        self.assertEqual(applied.get_json()["errors"][0]["code"], "annotation_drift")
 
     def test_project_delete_requires_confirmation_and_protects_sample(self):
         doc_id = "project_delete"

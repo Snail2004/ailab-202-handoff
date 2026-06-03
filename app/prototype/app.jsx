@@ -791,6 +791,73 @@ function App() {
     }
   }
 
+  async function buildAnnotationInput(chapterId) {
+    if (!activeDocId || !chapterId) return null;
+    try {
+      const input = await API.buildAnnotationInput(activeDocId, {
+        chapter_id: chapterId,
+        user: currentUser(),
+      });
+      toast("Annotation input built", "good", `${input.blocks?.length || 0} blocks`);
+      return input;
+    } catch (err) {
+      toast("Build annotation input failed", "bad", errorMessage(err));
+      return null;
+    }
+  }
+
+  async function resolveAnnotationCandidate(candidate) {
+    if (!activeDocId) return null;
+    try {
+      const result = await API.resolveAnnotationCandidate(activeDocId, {
+        candidate,
+        user: currentUser(),
+      });
+      const okEntities = (result.entities || []).filter(item => item.status === "ok").length;
+      const okTerms = (result.glossary || []).filter(item => item.status === "ok").length;
+      toast("Annotation candidate resolved", "good", `${okEntities} entities · ${okTerms} terms`);
+      return result;
+    } catch (err) {
+      toast("Resolve annotation candidate failed", "bad", errorMessage(err));
+      return {
+        ok: false,
+        errors: err.errors || [],
+        warnings: err.warnings || [],
+      };
+    }
+  }
+
+  async function loadAnnotationAgentCandidate(chapterId) {
+    if (!activeDocId || !chapterId) return null;
+    try {
+      const result = await API.getAnnotationAgentCandidate(activeDocId, chapterId);
+      toast("Agent candidate loaded", "good", result.path || chapterId);
+      return result;
+    } catch (err) {
+      toast("Load agent candidate failed", "bad", errorMessage(err));
+      return null;
+    }
+  }
+
+  async function applyAnnotationCandidate(chapterId) {
+    if (!activeDocId || !chapterId) return null;
+    try {
+      const result = await API.applyAnnotationCandidate(activeDocId, {
+        chapter_id: chapterId,
+        approved: true,
+        accept_all_resolved: true,
+        user: currentUser(),
+      });
+      await loadDataset(activeDocId, { silent: true });
+      const counts = result.counts || {};
+      toast("Annotation candidate applied", "good", `${counts.entities || 0} entities · ${counts.glossary || 0} terms`);
+      return result;
+    } catch (err) {
+      toast("Apply annotation candidate failed", "bad", errorMessage(err));
+      return null;
+    }
+  }
+
   function findBlock(blockId) {
     return blocks.find(b => b.block_id === blockId) || null;
   }
@@ -1117,6 +1184,10 @@ function App() {
           onLoadNormalizeAgentPlan={loadNormalizeAgentPlan}
           onImportNormalizePlan={importNormalizePlan}
           onApplyNormalizePlan={applyNormalizePlan}
+          onBuildAnnotationInput={buildAnnotationInput}
+          onLoadAnnotationAgentCandidate={loadAnnotationAgentCandidate}
+          onResolveAnnotationCandidate={resolveAnnotationCandidate}
+          onApplyAnnotationCandidate={applyAnnotationCandidate}
         />
         <Toasts items={toasts} onDismiss={dismiss} />
       </>

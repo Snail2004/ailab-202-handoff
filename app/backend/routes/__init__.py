@@ -1,5 +1,6 @@
 from flask import Flask
 
+from routes.annotation import bp as annotation_bp
 from routes.dataset import bp as dataset_bp
 from routes.edits import bp as edits_bp
 from routes.history import bp as history_bp
@@ -17,3 +18,4 @@ def register_blueprints(app: Flask) -> None:
     app.register_blueprint(references_bp, url_prefix="/api")
     app.register_blueprint(package_bp, url_prefix="/api")
     app.register_blueprint(history_bp, url_prefix="/api")
+    app.register_blueprint(annotation_bp, url_prefix="/api")

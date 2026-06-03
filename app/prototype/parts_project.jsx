@@ -19,6 +19,10 @@ function ProjectSourceScreen({
   onLoadNormalizeAgentPlan,
   onImportNormalizePlan,
   onApplyNormalizePlan,
+  onBuildAnnotationInput,
+  onLoadAnnotationAgentCandidate,
+  onResolveAnnotationCandidate,
+  onApplyAnnotationCandidate,
 }) {
   const [file, setFile] = React.useState(null);
   const [confirmOverwrite, setConfirmOverwrite] = React.useState(false);
@@ -31,6 +35,11 @@ function ProjectSourceScreen({
   const [normalizeResult, setNormalizeResult] = React.useState(null);
   const [normalizeBusy, setNormalizeBusy] = React.useState("");
   const [normalizeReviewed, setNormalizeReviewed] = React.useState(false);
+  const [annotationChapterId, setAnnotationChapterId] = React.useState("");
+  const [annotationInput, setAnnotationInput] = React.useState(null);
+  const [annotationCandidateText, setAnnotationCandidateText] = React.useState("");
+  const [annotationResolved, setAnnotationResolved] = React.useState(null);
+  const [annotationBusy, setAnnotationBusy] = React.useState("");
   const meta = docInfo.metadata || {};
   const prov = docInfo.provenance || {};
   const extracted = blocks.length > 0;
@@ -72,7 +81,21 @@ function ProjectSourceScreen({
     setNormalizeResult(null);
     setNormalizeBusy("");
     setNormalizeReviewed(false);
+    setAnnotationInput(null);
+    setAnnotationCandidateText("");
+    setAnnotationResolved(null);
+    setAnnotationBusy("");
   }, [selectedProject?.doc_id, selectedProject?.note]);
+
+  React.useEffect(() => {
+    if (!chapters.length) {
+      setAnnotationChapterId("");
+      return;
+    }
+    if (!annotationChapterId || !chapters.some(ch => ch.chapter_id === annotationChapterId)) {
+      setAnnotationChapterId(chapters[0].chapter_id);
+    }
+  }, [chapters, annotationChapterId]);
 
   function patchMetadata(patch) {
     onPatchDoc({ metadata: patch });
@@ -290,6 +313,137 @@ function ProjectSourceScreen({
     await onApplyNormalizePlan({ overwrite: !!overwrite });
     setConfirmNormalizeApply(false);
     setNormalizeBusy("");
+  }
+
+  function annotationPaths() {
+    if (!annotationInput) return {};
+    const docId = annotationInput.doc_id || activeDocId || "";
+    const safeChapter = (annotationInput.chapter_id || annotationChapterId || "").replace(/[^A-Za-z0-9_-]/g, "_");
+    const root = annotationInput.paths?.project_root || `ailab_projects/${docId}`;
+    return {
+      project_root: root,
+      input: annotationInput.paths?.input || `${root}/working/annotation/${safeChapter}_input.json`,
+      candidate: annotationInput.paths?.candidate || `${root}/working/annotation/${safeChapter}_candidate.json`,
+      resolved: annotationInput.paths?.resolved || `${root}/working/annotation/${safeChapter}_resolved.json`,
+    };
+  }
+
+  function annotationPrompt() {
+    if (!annotationInput) return "";
+    const paths = annotationPaths();
+    return [
+      "You are the AI-LAB Dataset Annotation Drafter Agent.",
+      "",
+      "Goal: read one chapter annotation input JSON and return one AnnotationCandidate JSON.",
+      "",
+      "Read first:",
+      "1. skills/dataset-annotation-drafter/SKILL.md",
+      "2. skills/dataset-annotation-drafter/references/ANNOTATION_CANDIDATE_CONTRACT.md",
+      "3. skills/dataset-annotation-drafter/references/ENTITY_GLOSSARY_DECISION_RULES.md",
+      "4. skills/dataset-annotation-drafter/references/LINKAGE_RULES.md",
+      "",
+      "Current source:",
+      `- doc_id: ${annotationInput.doc_id || activeDocId || ""}`,
+      `- chapter_id: ${annotationInput.chapter_id || annotationChapterId || ""}`,
+      `- project folder: ${paths.project_root || ""}`,
+      `- annotation_input: ${paths.input || ""}`,
+      `- candidate_output_suggested: ${paths.candidate || ""}`,
+      "",
+      "Hard rules:",
+      "- Use only the provided annotation_input JSON.",
+      "- Echo doc_id and chapter_id exactly.",
+      "- Do not emit spans, start, or end offsets.",
+      "- Mention surfaces must be verbatim substrings of clean_text.",
+      "- Use left_context/right_context to disambiguate duplicate surfaces.",
+      "- Use entity_key consistently; discourse and characters_present_refs must reference entity_key or existing_entity_id.",
+      "- Entity has no status. Glossary status is assigned by backend, not by you.",
+      "- Do not translate full blocks or create reference_vi/draft_vi.",
+      "- Do not annotate references. Do not rewrite source text.",
+      "- Avoid dual-tagging a proper-name/place surface as both entity and glossary.",
+      "- characters_present_refs should contain person entities only.",
+      "",
+      "Output:",
+      "- If you can write files, write exactly one JSON object to candidate_output_suggested.",
+      "- If you cannot write files, return exactly one JSON object.",
+      "- No markdown fence and no explanation outside JSON.",
+    ].join("\n");
+  }
+
+  async function buildAnnotationInput() {
+    if (!annotationChapterId || !onBuildAnnotationInput) return;
+    setAnnotationBusy("input");
+    const result = await onBuildAnnotationInput(annotationChapterId);
+    if (result) {
+      setAnnotationInput(result);
+      setAnnotationResolved(null);
+      setAnnotationCandidateText("");
+    }
+    setAnnotationBusy("");
+  }
+
+  async function copyAnnotationInput() {
+    if (!annotationInput) return;
+    await navigator.clipboard.writeText(JSON.stringify(annotationInput, null, 2));
+  }
+
+  async function copyAnnotationPrompt() {
+    const text = annotationPrompt();
+    if (!text) return;
+    await navigator.clipboard.writeText(text);
+  }
+
+  async function loadAnnotationCandidateFile(event) {
+    const selected = event.target.files?.[0];
+    if (!selected) return;
+    const text = await selected.text();
+    setAnnotationCandidateText(text);
+    setAnnotationResolved(null);
+    event.target.value = "";
+  }
+
+  async function loadAnnotationAgentCandidate() {
+    if (!annotationChapterId || !onLoadAnnotationAgentCandidate) return;
+    setAnnotationBusy("load-agent-candidate");
+    const result = await onLoadAnnotationAgentCandidate(annotationChapterId);
+    if (result?.candidate) {
+      setAnnotationCandidateText(JSON.stringify(result.candidate, null, 2));
+      setAnnotationResolved(null);
+    }
+    setAnnotationBusy("");
+  }
+
+  async function resolveAnnotationCandidate() {
+    if (!annotationCandidateText.trim() || !onResolveAnnotationCandidate) return;
+    let candidate;
+    try {
+      candidate = JSON.parse(annotationCandidateText);
+    } catch (err) {
+      setAnnotationResolved({
+        ok: false,
+        errors: [{ message: err.message || String(err) }],
+      });
+      return;
+    }
+    setAnnotationBusy("resolve");
+    const result = await onResolveAnnotationCandidate(candidate);
+    setAnnotationResolved(result);
+    setAnnotationBusy("");
+  }
+
+  async function applyAnnotationCandidate() {
+    if (!annotationChapterId || !onApplyAnnotationCandidate) return;
+    setAnnotationBusy("apply");
+    await onApplyAnnotationCandidate(annotationChapterId);
+    setAnnotationBusy("");
+  }
+
+  function annotationStatusCounts(items) {
+    const rows = Array.isArray(items) ? items : [];
+    return {
+      ok: rows.filter(item => item.status === "ok").length,
+      review: rows.filter(item => item.status && item.status !== "ok").length,
+      total: rows.length,
+    };
   }
 
   const normalizePreview = normalizeResult?.preview || null;
@@ -571,6 +725,128 @@ function ProjectSourceScreen({
                       <div className="normalizer-actions end">
                         <button className="btn primary" disabled={!canApplyNormalize || normalizeBusy === "apply"} onClick={startNormalizeApply}>
                           <Ic.play size={13} />{normalizeBusy === "apply" ? "Applying..." : "Approve & extract normalized"}
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="project-panel normalizer-panel">
+            <div className="panel-title"><Ic.sparkle size={14} />Annotation drafter</div>
+            <p className="normalizer-intro">
+              Optional AI-assist step for one chapter. The backend only builds input, resolves spans, and applies resolved candidates; it does not call an LLM.
+            </p>
+            <div className="normalizer-steps">
+              <div className="normalizer-step">
+                <div className="normalizer-step-head">
+                  <span className="step-num">1</span>
+                  <div>
+                    <div className="step-title">Build annotation input</div>
+                    <div className="step-sub">Send this chapter JSON to the dataset-annotation-drafter skill.</div>
+                  </div>
+                </div>
+                <FormField label="chapter">
+                  <select value={annotationChapterId} disabled={!chapters.length} onChange={e => setAnnotationChapterId(e.target.value)}>
+                    {chapters.map(ch => <option key={ch.chapter_id} value={ch.chapter_id}>{ch.title || ch.chapter_id} · {ch.block_count || 0} blocks</option>)}
+                  </select>
+                </FormField>
+                <div className="normalizer-actions">
+                  <button className="btn" disabled={!annotationChapterId || annotationBusy === "input"} onClick={buildAnnotationInput}>
+                    <Ic.layers size={13} />{annotationBusy === "input" ? "Building..." : "Build input"}
+                  </button>
+                  <button className="btn" disabled={!annotationInput} onClick={copyAnnotationInput}><Ic.doc size={13} />Copy input</button>
+                  <button className="btn" disabled={!annotationInput} onClick={copyAnnotationPrompt}><Ic.sparkle size={13} />Copy prompt</button>
+                </div>
+                {annotationInput && (
+                  <div className="normalizer-stats">
+                    <span><b>{annotationInput.blocks?.length || 0}</b> blocks</span>
+                    <span><b>{annotationInput.known_entities?.length || 0}</b> known entities</span>
+                    <span><b>{annotationInput.known_terms?.length || 0}</b> known terms</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="normalizer-step">
+                <div className="normalizer-step-head">
+                  <span className="step-num">2</span>
+                  <div>
+                    <div className="step-title">Resolve AnnotationCandidate</div>
+                    <div className="step-sub">Paste/upload the JSON returned by the skill. Ambiguous or conflicting items will not auto-apply.</div>
+                  </div>
+                </div>
+                <textarea
+                  className="json-textarea"
+                  value={annotationCandidateText}
+                  placeholder='{"doc_id":"...","chapter_id":"...","entity_candidates":[...]}'
+                  rows={7}
+                  onChange={e => { setAnnotationCandidateText(e.target.value); setAnnotationResolved(null); }}
+                />
+                <div className="normalizer-actions">
+                  <button className="btn" disabled={!annotationChapterId || annotationBusy === "load-agent-candidate"} onClick={loadAnnotationAgentCandidate}>
+                    <Ic.sparkle size={13} />{annotationBusy === "load-agent-candidate" ? "Loading..." : "Load agent candidate"}
+                  </button>
+                  <label className="btn">
+                    <Ic.file size={13} />Load candidate file
+                    <input className="hidden-file" type="file" accept=".json,application/json" onChange={loadAnnotationCandidateFile} />
+                  </label>
+                  <button className="btn primary" disabled={!annotationCandidateText.trim() || annotationBusy === "resolve"} onClick={resolveAnnotationCandidate}>
+                    <Ic.checkCircle size={13} />{annotationBusy === "resolve" ? "Resolving..." : "Resolve candidate"}
+                  </button>
+                </div>
+              </div>
+
+              {annotationResolved && (
+                <div className={"normalizer-preview " + (annotationResolved.ok === false ? "bad" : "")}>
+                  <div className="normalizer-preview-head">
+                    <span>{annotationResolved.ok === false ? "Candidate blocked" : "Resolved preview"}</span>
+                    {annotationResolved.meta && <span className="mono">{annotationResolved.meta.block_text_hash}</span>}
+                  </div>
+                  {annotationResolved.ok === false ? (
+                    <div className="normalizer-errors">
+                      {(annotationResolved.errors || []).map((err, idx) => (
+                        <div key={idx} className="normalizer-error"><Ic.xCircle size={12} />{err.message || String(err)}</div>
+                      ))}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="normalizer-summary-grid">
+                        {(() => {
+                          const e = annotationStatusCounts(annotationResolved.entities);
+                          const g = annotationStatusCounts(annotationResolved.glossary);
+                          const d = annotationStatusCounts(annotationResolved.discourse);
+                          const s = annotationResolved.summary ? annotationStatusCounts([annotationResolved.summary]) : { ok: 0, review: 0, total: 0 };
+                          return (
+                            <>
+                              <span><b>{e.ok}/{e.total}</b> entities ok</span>
+                              <span><b>{g.ok}/{g.total}</b> terms ok</span>
+                              <span><b>{d.ok}/{d.total}</b> discourse ok</span>
+                              <span><b>{s.ok}/{s.total}</b> summary ok</span>
+                            </>
+                          );
+                        })()}
+                      </div>
+                      <div className="normalizer-chapters">
+                        {(annotationResolved.entities || []).slice(0, 8).map(item => (
+                          <div key={item.entity_id} className="normalizer-chapter">
+                            <span className="mono">{item.entity_id}</span>
+                            <span>{item.canonical_source}</span>
+                            <span className={item.status === "ok" ? "faint" : "bad"}>{item.status}</span>
+                          </div>
+                        ))}
+                        {(annotationResolved.glossary || []).slice(0, 8).map(item => (
+                          <div key={item.term_id} className="normalizer-chapter">
+                            <span className="mono">{item.term_id}</span>
+                            <span>{item.source_term}</span>
+                            <span className={item.status === "ok" ? "faint" : "bad"}>{item.status}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="normalizer-actions end">
+                        <button className="btn primary" disabled={annotationBusy === "apply"} onClick={applyAnnotationCandidate}>
+                          <Ic.play size={13} />{annotationBusy === "apply" ? "Applying..." : "Apply resolved OK items"}
                         </button>
                       </div>
                     </>
