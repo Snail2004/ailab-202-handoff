@@ -396,6 +396,85 @@ function App() {
   const allSpans = useMemo(() => blocks.flatMap(b => buildSpans(b, glossary, entities).map(s => ({ ...s, block_id: b.block_id }))), [blocks, glossary, entities]);
   const staleCount = allSpans.filter(s => s.stale).length;
 
+  const linkIndex = useMemo(() => {
+    const blockById = {};
+    const chapterById = {};
+    blocks.forEach(b => { blockById[b.block_id] = b; });
+    chapters.forEach(ch => { chapterById[ch.chapter_id] = ch; });
+
+    const chapterLabel = (chapterId) => {
+      const ch = chapterById[chapterId] || {};
+      return ch.title || ch.chapter_title || chapterId || "";
+    };
+
+    const entityLinks = {};
+    entities.forEach(entity => {
+      const mentions = entity.mentions || [];
+      const mentionsByBlock = {};
+      const blockIds = new Set();
+      const chapterIds = new Set();
+      mentions.forEach(m => {
+        if (!mentionsByBlock[m.block_id]) mentionsByBlock[m.block_id] = [];
+        mentionsByBlock[m.block_id].push(m);
+        blockIds.add(m.block_id);
+        const b = blockById[m.block_id];
+        if (b?.chapter_id) chapterIds.add(b.chapter_id);
+      });
+
+      const speakerBlocks = [];
+      const addresseeBlocks = [];
+      blocks.forEach(b => {
+        if (b.discourse?.speaker_entity_id === entity.entity_id) speakerBlocks.push(b.block_id);
+        if (b.discourse?.addressee_entity_id === entity.entity_id) addresseeBlocks.push(b.block_id);
+      });
+
+      const summaryChapters = [];
+      summaries.forEach(s => {
+        if ((s.characters_present || []).includes(entity.entity_id)) {
+          summaryChapters.push({
+            chapter_id: s.chapter_id,
+            title: chapterLabel(s.chapter_id),
+          });
+        }
+      });
+
+      entityLinks[entity.entity_id] = {
+        item: entity,
+        mentions,
+        mentionsByBlock,
+        blockIds: [...blockIds],
+        chapters: [...chapterIds].map(chapter_id => ({ chapter_id, title: chapterLabel(chapter_id) })),
+        speakerBlocks,
+        addresseeBlocks,
+        summaryChapters,
+      };
+    });
+
+    const glossaryLinks = {};
+    glossary.forEach(term => {
+      const occurrences = term.occurrences || [];
+      const occurrencesByBlock = {};
+      const blockIds = new Set();
+      const chapterIds = new Set();
+      occurrences.forEach(o => {
+        if (!occurrencesByBlock[o.block_id]) occurrencesByBlock[o.block_id] = [];
+        occurrencesByBlock[o.block_id].push(o);
+        blockIds.add(o.block_id);
+        const b = blockById[o.block_id];
+        if (b?.chapter_id) chapterIds.add(b.chapter_id);
+      });
+      glossaryLinks[term.term_id] = {
+        item: term,
+        occurrences,
+        occurrencesByBlock,
+        blockIds: [...blockIds],
+        chapters: [...chapterIds].map(chapter_id => ({ chapter_id, title: chapterLabel(chapter_id) })),
+      };
+    });
+
+    return { entities: entityLinks, glossary: glossaryLinks, blockById, chapterById };
+  }, [blocks, chapters, glossary, entities, summaries]);
+
   const activeChapter = useMemo(() => {
     if (!block) return null;
     return chapters.find(ch => ch.chapter_id === block.chapter_id) || null;
@@ -1069,7 +1148,7 @@ function App() {
         <CenterEditor block={block} docInfo={docInfo} reviewed={!!review.blocks?.[selectedId]?.reviewed} spans={spans}
           editing={editing} mode={centerMode} onModeChange={setCenterMode}
           chapter={activeChapter} chapters={chapters} chapterBlocks={chapterBlocks} allBlocks={blocks} review={review} selectedId={selectedId}
-          getSpansForBlock={getSpansForBlock} onSelectBlock={selectBlock} onNextUnreviewed={nextUnreviewedBlock}
+          getSpansForBlock={getSpansForBlock} linkIndex={linkIndex} onSelectBlock={selectBlock} onNextUnreviewed={nextUnreviewedBlock}
           onEdit={() => setEditing(true)} onCommitClean={commitClean} onCancelEdit={() => setEditing(false)}
           onChangeType={changeType} onToggleOpening={() => toggleOpening(selectedId)} onToggleFlag={(flag) => toggleFlag(flag, selectedId)} onMarkReviewed={markReviewed}
           onAddGlossary={addGlossary} onAddEntity={addEntity} />

@@ -175,7 +175,135 @@ function SelectionPopover({ rect, onGlossary, onEntity }) {
   );
 }
 
-function CleanTextSurface({ block, spans = [], editing, draft, onDraft, onMouseUp, cleanRef, taRef, onAddGlossary, onAddEntity, selection }) {
+function compactList(value, empty = "none") {
+  if (Array.isArray(value)) return value.length ? value.join(", ") : empty;
+  if (typeof value === "object" && value !== null) {
+    const rows = Object.entries(value).filter(([, v]) => v !== undefined && v !== null && v !== "");
+    return rows.length ? rows.map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`).join("; ") : empty;
+  }
+  if (value === undefined || value === null || value === "") return empty;
+  return String(value);
+}
+
+function limitItems(items, limit = 4) {
+  const rows = (items || []).filter(Boolean);
+  if (rows.length <= limit) return rows.join(", ");
+  return rows.slice(0, limit).join(", ") + ` +${rows.length - limit}`;
+}
+
+function confidenceText(value) {
+  if (value === undefined || value === null || value === "") return "n/a";
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(2) : String(value);
+}
+
+function hoverCardPosition(rect) {
+  if (!rect) return { top: 0, left: 0, above: false };
+  const width = 328;
+  const left = Math.min(Math.max(12, rect.left), Math.max(12, window.innerWidth - width - 12));
+  const above = rect.bottom > window.innerHeight - 250;
+  return {
+    left,
+    top: above ? rect.top - 8 : rect.bottom + 8,
+    above,
+  };
+}
+
+function HighlightHoverCard({ hover, linkIndex }) {
+  if (!hover?.span || !hover?.rect) return null;
+  const { span, block } = hover;
+  const pos = hoverCardPosition(hover.rect);
+
+  if (span.kind === "entity") {
+    const data = linkIndex?.entities?.[span.id];
+    const entity = data?.item;
+    if (!entity) return null;
+    const currentMentions = data.mentionsByBlock?.[block.block_id] || [];
+    const chapterLabels = (data.chapters || []).map(ch => ch.title || ch.chapter_id);
+    const summaryLabels = (data.summaryChapters || []).map(ch => ch.title || ch.chapter_id);
+    return (
+      <div className={"hl-card" + (pos.above ? " above" : "")} style={{ top: pos.top, left: pos.left }}>
+        <div className="hl-card-head">
+          <span className="hl-card-kind entity"><Ic.users size={12} />Entity</span>
+          <span className="hl-card-conf mono">conf {confidenceText(entity.confidence)}</span>
+        </div>
+        <div className="hl-card-title">
+          <span>{entity.canonical_source || span.id}</span>
+          <span className="hl-card-arrow">-></span>
+          <span>{entity.canonical_target || "target needed"}</span>
+        </div>
+        <div className="hl-card-grid">
+          <span>type</span><b>{compactList(entity.entity_type || entity.type)}</b>
+          <span>gender</span><b>{compactList(entity.gender)}</b>
+          <span>aliases</span><b>{compactList(entity.aliases_target)}</b>
+          <span>pronoun</span><b>{compactList(entity.pronoun_policy)}</b>
+          <span>annotator</span><b>{compactList(entity.annotated_by)}</b>
+        </div>
+        {span.stale && <div className="hl-card-warning"><Ic.alert size={12} />This span needs re-tag.</div>}
+        <div className="hl-card-section">
+          <div className="hl-card-section-title">Links</div>
+          <div className="hl-card-links">
+            <span>{currentMentions.length} mention{currentMentions.length === 1 ? "" : "s"} in this block</span>
+            <span>{data.mentions.length} total mention{data.mentions.length === 1 ? "" : "s"}</span>
+            <span>{data.blockIds.length} block{data.blockIds.length === 1 ? "" : "s"}</span>
+            <span>{data.chapters.length} chapter{data.chapters.length === 1 ? "" : "s"}</span>
+            <span>{data.speakerBlocks.length} speaker block{data.speakerBlocks.length === 1 ? "" : "s"}</span>
+            <span>{data.addresseeBlocks.length} addressee block{data.addresseeBlocks.length === 1 ? "" : "s"}</span>
+          </div>
+          {chapterLabels.length > 0 && <div className="hl-card-small"><b>chapters</b> {limitItems(chapterLabels)}</div>}
+          {summaryLabels.length > 0 && <div className="hl-card-small"><b>characters_present</b> {limitItems(summaryLabels)}</div>}
+        </div>
+      </div>
+    );
+  }
+
+  if (span.kind === "glossary") {
+    const data = linkIndex?.glossary?.[span.id];
+    const term = data?.item;
+    if (!term) return null;
+    const currentOccurrences = data.occurrencesByBlock?.[block.block_id] || [];
+    const chapterLabels = (data.chapters || []).map(ch => ch.title || ch.chapter_id);
+    return (
+      <div className={"hl-card" + (pos.above ? " above" : "")} style={{ top: pos.top, left: pos.left }}>
+        <div className="hl-card-head">
+          <span className="hl-card-kind glossary"><Ic.tag size={12} />Glossary</span>
+          <span className="hl-card-status">{term.status || "candidate"}</span>
+        </div>
+        <div className="hl-card-title">
+          <span>{term.source_term || span.id}</span>
+          <span className="hl-card-arrow">-></span>
+          <span>{term.expected_target || "target needed"}</span>
+        </div>
+        <div className="hl-card-grid">
+          <span>allowed</span><b>{compactList(term.allowed_variants)}</b>
+          <span>forbidden</span><b>{compactList(term.forbidden_variants)}</b>
+          <span>domain</span><b>{compactList(term.domain)}</b>
+          <span>scope</span><b>{compactList(term.chapter_scope)}</b>
+          <span>annotator</span><b>{compactList(term.annotated_by)}</b>
+          <span>confidence</span><b>{confidenceText(term.confidence)}</b>
+        </div>
+        {span.stale && <div className="hl-card-warning"><Ic.alert size={12} />This span needs re-tag.</div>}
+        <div className="hl-card-section">
+          <div className="hl-card-section-title">Links</div>
+          <div className="hl-card-links">
+            <span>{currentOccurrences.length} occurrence{currentOccurrences.length === 1 ? "" : "s"} in this block</span>
+            <span>{data.occurrences.length} total occurrence{data.occurrences.length === 1 ? "" : "s"}</span>
+            <span>{data.blockIds.length} block{data.blockIds.length === 1 ? "" : "s"}</span>
+            <span>{data.chapters.length} chapter{data.chapters.length === 1 ? "" : "s"}</span>
+          </div>
+          {chapterLabels.length > 0 && <div className="hl-card-small"><b>chapters</b> {limitItems(chapterLabels)}</div>}
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+function CleanTextSurface({
+  block, spans = [], editing, draft, onDraft, onMouseUp, cleanRef, taRef, onAddGlossary, onAddEntity, selection,
+  onHoverSpan, onLeaveSpan
+}) {
   if (editing) {
     return (
       <textarea className="clean-edit mono" ref={taRef} value={draft}
@@ -187,7 +315,9 @@ function CleanTextSurface({ block, spans = [], editing, draft, onDraft, onMouseU
       {segmentize(block.clean_text || "", spans).map((seg, i) =>
         seg.span
           ? <mark key={i} className={"hl hl-" + seg.span.kind + (seg.span.stale ? " hl-stale" : "")}
-              title={seg.span.label}>{seg.text}</mark>
+              aria-label={seg.span.label}
+              onMouseEnter={e => onHoverSpan && onHoverSpan(seg.span, block, e.currentTarget.getBoundingClientRect())}
+              onMouseLeave={() => onLeaveSpan && onLeaveSpan()}>{seg.text}</mark>
           : <span key={i}>{seg.text}</span>
       )}
       <SelectionPopover rect={selection?.rect}
@@ -199,7 +329,7 @@ function CleanTextSurface({ block, spans = [], editing, draft, onDraft, onMouseU
 
 function ChapterBlockRow({
   block, spans, reviewed, active, onSelectBlock, onCommitClean,
-  onMarkReviewed, onAddGlossary, onAddEntity
+  onMarkReviewed, onAddGlossary, onAddEntity, onHoverSpan, onLeaveSpan
 }) {
   const cleanRef = React.useRef(null);
   const taRef = React.useRef(null);
@@ -224,6 +354,7 @@ function ChapterBlockRow({
     const off = selectionOffsets(c);
     if (!off) { setSel(null); return; }
     onSelectBlock(block.block_id);
+    if (onLeaveSpan) onLeaveSpan();
     const r = window.getSelection().getRangeAt(0).getBoundingClientRect();
     const host = c.getBoundingClientRect();
     const popoverWidth = 258;
@@ -299,6 +430,8 @@ function ChapterBlockRow({
         taRef={taRef}
         selection={sel}
         onMouseUp={handleMouseUp}
+        onHoverSpan={onHoverSpan}
+        onLeaveSpan={onLeaveSpan}
         onAddGlossary={() => { onAddGlossary(block.block_id, sel); clearSelection(); }}
         onAddEntity={() => { onAddEntity(block.block_id, sel); clearSelection(); }}
       />
@@ -308,7 +441,7 @@ function ChapterBlockRow({
 
 function SingleBlockView({
   block, docInfo, reviewed, spans, editing, onEdit, onCommitClean, onCancelEdit,
-  onAddGlossary, onAddEntity
+  onAddGlossary, onAddEntity, onHoverSpan, onLeaveSpan
 }) {
   const cleanRef = React.useRef(null);
   const taRef = React.useRef(null);
@@ -330,6 +463,7 @@ function SingleBlockView({
     if (!c) return;
     const off = selectionOffsets(c);
     if (!off) { setSel(null); return; }
+    if (onLeaveSpan) onLeaveSpan();
     const r = window.getSelection().getRangeAt(0).getBoundingClientRect();
     const host = c.getBoundingClientRect();
     const popoverWidth = 258;
@@ -384,6 +518,8 @@ function SingleBlockView({
               taRef={taRef}
               selection={sel}
               onMouseUp={handleMouseUp}
+              onHoverSpan={onHoverSpan}
+              onLeaveSpan={onLeaveSpan}
               onAddGlossary={() => { onAddGlossary(block.block_id, sel); clearSelection(); }}
               onAddEntity={() => { onAddEntity(block.block_id, sel); clearSelection(); }}
             />
@@ -403,7 +539,7 @@ function SingleBlockView({
 
 function ChapterStream({
   blocks = [], chapters = [], selectedId, review, getSpansForBlock, onSelectBlock, onCommitClean,
-  onMarkReviewed, onAddGlossary, onAddEntity
+  onMarkReviewed, onAddGlossary, onAddEntity, onHoverSpan, onLeaveSpan
 }) {
   const rows = blocks || [];
   const chapterLookup = React.useMemo(() => {
@@ -452,6 +588,8 @@ function ChapterStream({
                 onMarkReviewed={onMarkReviewed}
                 onAddGlossary={onAddGlossary}
                 onAddEntity={onAddEntity}
+                onHoverSpan={onHoverSpan}
+                onLeaveSpan={onLeaveSpan}
               />
             </React.Fragment>
           );
@@ -463,15 +601,20 @@ function ChapterStream({
 
 function CenterEditor({
   block, docInfo, reviewed, spans, editing, mode, onModeChange, chapter, chapters, chapterBlocks, allBlocks,
-  review, selectedId, getSpansForBlock, onSelectBlock, onNextUnreviewed,
+  review, selectedId, getSpansForBlock, linkIndex, onSelectBlock, onNextUnreviewed,
   onEdit, onCommitClean, onCancelEdit,
   onChangeType, onToggleOpening, onToggleFlag, onMarkReviewed,
   onAddGlossary, onAddEntity,
 }) {
+  const [hoverInfo, setHoverInfo] = React.useState(null);
   const chapterTitle = chapter?.title || chapter?.chapter_title || block.chapter_id;
   const streamBlocks = mode === "book" ? (allBlocks || []) : (chapterBlocks || []);
   const streamLabel = mode === "book" ? (docInfo?.metadata?.title || docInfo?.doc_id || "Full book") : chapterTitle;
   const streamCount = mode === "book" ? (allBlocks?.length || 0) : (chapterBlocks?.length || 0);
+  const handleHoverSpan = React.useCallback((span, targetBlock, rect) => {
+    setHoverInfo({ span, block: targetBlock, rect });
+  }, []);
+  const handleLeaveSpan = React.useCallback(() => setHoverInfo(null), []);
 
   return (
     <div className="col col-center">
@@ -492,6 +635,8 @@ function CenterEditor({
           onMarkReviewed={onMarkReviewed}
           onAddGlossary={onAddGlossary}
           onAddEntity={onAddEntity}
+          onHoverSpan={handleHoverSpan}
+          onLeaveSpan={handleLeaveSpan}
         />
       ) : (
         <SingleBlockView
@@ -505,8 +650,11 @@ function CenterEditor({
           onCancelEdit={onCancelEdit}
           onAddGlossary={onAddGlossary}
           onAddEntity={onAddEntity}
+          onHoverSpan={handleHoverSpan}
+          onLeaveSpan={handleLeaveSpan}
         />
       )}
+      <HighlightHoverCard hover={hoverInfo} linkIndex={linkIndex} />
     </div>
   );
 }
