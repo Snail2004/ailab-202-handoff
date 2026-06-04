@@ -87,7 +87,7 @@
     }
   },
   "properties": {
-    "schema_version": { "const": "1.4.0" },
+    "schema_version": { "const": "1.5.0" },
     "doc_id": { "type": "string", "minLength": 1 },
     "metadata": {
       "type": "object",

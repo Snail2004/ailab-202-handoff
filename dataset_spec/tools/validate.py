@@ -35,6 +35,7 @@ import argparse
 import json
 import re
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 for _stream in (sys.stdout, sys.stderr):
@@ -65,6 +66,7 @@ DATA_FILES = {
     "entities": "entities.jsonl",
     "reference": "manual_reference_subset.jsonl",
     "chapter_summary": "chapter_summaries.jsonl",
+    "entity_relation": "entity_relations.jsonl",
 }
 SCHEMA_FILES = {
     "document": "document.schema.json",
@@ -72,6 +74,7 @@ SCHEMA_FILES = {
     "entities": "entity.schema.json",
     "reference": "reference_subset.schema.json",
     "chapter_summary": "chapter_summary.schema.json",
+    "entity_relation": "entity_relation.schema.json",
 }
 
 
@@ -217,6 +220,7 @@ def main():
     warnings = []
 
     block_ids, chapter_ids = set(), set()
+    block_order = {}
     dup_blocks, dup_chapters = [], []
     term_ids, entity_ids, reference_ids = set(), set(), set()
     reference_blocks = {}
@@ -246,6 +250,7 @@ def main():
                 if bid in block_ids:
                     dup_blocks.append(bid)
                 block_ids.add(bid)
+                block_order.setdefault(bid, len(block_order))
                 for sent in b.get("sentences", []):
                     check_span(sent.get("span"), DATA_FILES["document"], f"block {bid} sentence {sent.get('sent_id')}", errors)
                 prov = b.get("provenance") or {}
@@ -272,10 +277,12 @@ def main():
     en = validate_jsonl("entities")
     rf = validate_jsonl("reference")
     cs = validate_jsonl("chapter_summary")
+    er = validate_jsonl("entity_relation")
 
     term_ids = collect_ids(gl, "term_id", DATA_FILES["glossary"], errors)
     entity_ids = collect_ids(en, "entity_id", DATA_FILES["entities"], errors)
     reference_ids = collect_ids(rf, "reference_id", DATA_FILES["reference"], errors)
+    relation_ids = collect_ids(er, "relation_id", DATA_FILES["entity_relation"], errors)
     for _, o in rf:
         reference_blocks[o.get("reference_id")] = o.get("block_id")
 
@@ -341,6 +348,50 @@ def main():
         if o.get("block_id") not in block_ids:
             errors.append((DATA_FILES["reference"], o.get("reference_id"), f"block_id not in document: {o.get('block_id')}"))
 
+    # ---- entity relations (optional sidecar) ----
+    pair_defaults = defaultdict(list)
+    pair_phase_ranges = defaultdict(list)
+    for _, o in er:
+        rid = o.get("relation_id")
+        src = o.get("source_entity_id")
+        tgt = o.get("target_entity_id")
+        if src not in entity_ids:
+            errors.append((DATA_FILES["entity_relation"], rid, f"source_entity_id not in entities: {src}"))
+        if tgt not in entity_ids:
+            errors.append((DATA_FILES["entity_relation"], rid, f"target_entity_id not in entities: {tgt}"))
+        vf = o.get("valid_from_block_id")
+        vt = o.get("valid_to_block_id")
+        if vf is not None and vf not in block_ids:
+            errors.append((DATA_FILES["entity_relation"], rid, f"valid_from_block_id not in document: {vf}"))
+        if vt is not None and vt not in block_ids:
+            errors.append((DATA_FILES["entity_relation"], rid, f"valid_to_block_id not in document: {vt}"))
+        for ev in o.get("evidence", []):
+            if ev.get("block_id") not in block_ids:
+                errors.append((DATA_FILES["entity_relation"], rid, f"evidence block_id not in document: {ev.get('block_id')}"))
+        has_phase_marker = any(o.get(k) is not None for k in ("state_label", "valid_from_block_id", "valid_to_block_id", "trigger_event_id"))
+        if has_phase_marker:
+            lo = block_order.get(vf, 0) if vf is not None else 0
+            hi = block_order.get(vt, len(block_order)) if vt is not None else len(block_order)
+            pair_phase_ranges[(src, tgt)].append((lo, hi, rid))
+        else:
+            pair_defaults[(src, tgt)].append(rid)
+
+    for (src, tgt), relation_ids_for_pair in pair_defaults.items():
+        if len(relation_ids_for_pair) > 1:
+            warnings.append(
+                f"{DATA_FILES['entity_relation']}: multiple default relations for "
+                f"({src} -> {tgt}): {', '.join(relation_ids_for_pair)}")
+
+    for (src, tgt), ranges in pair_phase_ranges.items():
+        ordered = sorted(ranges)
+        for i in range(len(ordered) - 1):
+            lo1, hi1, rid1 = ordered[i]
+            lo2, hi2, rid2 = ordered[i + 1]
+            if lo2 <= hi1:
+                warnings.append(
+                    f"{DATA_FILES['entity_relation']}: overlapping phase ranges for "
+                    f"({src} -> {tgt}): {rid1} and {rid2}")
+
     # ---- report ----
     counts = {
         "chapters": len(chapter_ids),
@@ -349,6 +400,7 @@ def main():
         "entities": len(entity_ids),
         "reference": len(reference_ids),
         "summaries": len(cs),
+        "relations": len(relation_ids),
     }
     if args.json:
         print_json_report(not errors, ds, counts, errors, warnings)
@@ -358,7 +410,7 @@ def main():
     print(f"AILAB dataset validation: {ds}")
     print(f"  chapters={counts['chapters']} blocks={counts['blocks']} "
           f"terms={counts['terms']} entities={counts['entities']} reference={counts['reference']} "
-          f"summaries={counts['summaries']}")
+          f"summaries={counts['summaries']} relations={counts['relations']}")
     for w in warnings:
         print(f"  [warn] {w}")
     if not errors:

@@ -1,5 +1,16 @@
 # AILAB Dataset Spec Kit Changelog
 
+## 1.5.0
+
+- Require `document.schema_version` to be `1.5.0`.
+- Add optional sidecar `entity_relations.jsonl` and schema `entity_relation.schema.json` for directed relations between entities, primarily to resolve Vietnamese address/pronoun (how a pair address each other and refer to themselves).
+- `address_policy` carries both directions as four strings: `source_to_target` / `target_to_source`, each with `self_term` / `address_term`.
+- A relation may be phased over the document via optional `state_label` + `valid_from_block_id` + `valid_to_block_id` + `trigger_event_id`, to model relationship change (e.g. ally -> enemy). Absent phase fields = relation applies to the whole document. Convention: `source_entity` IS the `relation_type` of `target_entity`.
+- `relation_type` is free-text with recommended values (sibling, parent, child, spouse, friend, master, servant, mentor, stranger, rival, creator_creation, guardian, ...); not a closed enum.
+- Validator: detect duplicate `relation_id`; `source_entity_id` / `target_entity_id` must resolve to entities; `valid_from_block_id` / `valid_to_block_id` / `evidence[].block_id` must resolve to blocks; warn on overlapping phase ranges for the same directed pair. Block ranges are compared by document order (`order_index`), not by string comparison.
+- `trigger_event_id` is a free-text label only (AI-LAB 1.5.0 has no events file to reference).
+- Golden sample: add `entity_relations.jsonl` with one stable elder/child relation (Clockkeeper <-> Mira).
+
 ## 1.4.0
 
 - Require `document.schema_version` to be `1.4.0`.
