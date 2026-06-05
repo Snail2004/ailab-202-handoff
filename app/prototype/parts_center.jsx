@@ -639,6 +639,88 @@ function addressSummary(address) {
   };
 }
 
+function previewMentionMeta(mention) {
+  if (!mention || typeof mention !== "object") return null;
+  if (mention.entity_id) return { kind: "entity", id: String(mention.entity_id) };
+  if (mention.term_id) return { kind: "term", id: String(mention.term_id) };
+  return null;
+}
+
+function rangesOverlap(aStart, aEnd, bStart, bEnd) {
+  return aStart < bEnd && bStart < aEnd;
+}
+
+function findPreviewRanges(text, mentions = [], surfaceKey) {
+  const value = String(text || "");
+  if (!value || !Array.isArray(mentions) || !mentions.length) return [];
+  const occupied = [];
+  const candidates = mentions
+    .map((mention, index) => {
+      const meta = previewMentionMeta(mention);
+      const surface = String(mention?.[surfaceKey] || "");
+      if (!meta || !surface) return null;
+      return {
+        mention,
+        index,
+        kind: meta.kind,
+        id: meta.id,
+        surface,
+        sourceSurface: String(mention.source_surface || ""),
+        targetSurface: String(mention.target_surface || ""),
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.surface.length - a.surface.length || a.index - b.index);
+
+  const ranges = [];
+  candidates.forEach(item => {
+    let from = 0;
+    while (from <= value.length) {
+      const start = value.indexOf(item.surface, from);
+      if (start === -1) break;
+      const end = start + item.surface.length;
+      if (!occupied.some(range => rangesOverlap(start, end, range.start, range.end))) {
+        const kindLabel = item.kind === "entity" ? "entity" : "term";
+        occupied.push({ start, end });
+        ranges.push({
+          start,
+          end,
+          ...item,
+          title: `${kindLabel} ${item.id}: ${item.sourceSurface || "source?"} -> ${item.targetSurface || "target?"}`,
+        });
+        break;
+      }
+      from = start + Math.max(1, item.surface.length);
+    }
+  });
+
+  return ranges.sort((a, b) => a.start - b.start || b.end - a.end);
+}
+
+function renderPreviewText(text, mentions, surfaceKey) {
+  const value = String(text || "");
+  const ranges = findPreviewRanges(value, mentions, surfaceKey);
+  if (!ranges.length) return value;
+  const pieces = [];
+  let cursor = 0;
+  ranges.forEach((range, index) => {
+    if (range.start > cursor) pieces.push(<span key={`t-${index}`}>{value.slice(cursor, range.start)}</span>);
+    pieces.push(
+      <mark
+        key={`h-${index}`}
+        className={"tp-hl " + range.kind}
+        title={range.title}
+        aria-label={range.title}
+      >
+        {value.slice(range.start, range.end)}
+      </mark>
+    );
+    cursor = range.end;
+  });
+  if (cursor < value.length) pieces.push(<span key="tail">{value.slice(cursor)}</span>);
+  return pieces;
+}
+
 function TranslationPreviewView({
   docInfo, chapters = [], allBlocks = [], chapter, selectedId, onSelectBlock, linkIndex
 }) {
@@ -794,6 +876,7 @@ function TranslationPreviewView({
               const preview = runByBlock[block.block_id] || null;
               const address = addressSummary(preview?.address_applied);
               const usedContext = preview?.used_context || [];
+              const mentions = preview?.mentions || [];
               return (
                 <article
                   key={block.block_id}
@@ -806,14 +889,14 @@ function TranslationPreviewView({
                       <span className="mono">{block.block_id}</span>
                       <span className={"tag tag-" + block.block_type}>{block.block_type}</span>
                     </div>
-                    <div className="tp-text">{block.clean_text || ""}</div>
+                    <div className="tp-text">{renderPreviewText(block.clean_text || "", mentions, "source_surface")}</div>
                   </div>
                   <div className={"tp-cell tp-target" + (!preview?.target_text ? " missing" : "")}>
                     <div className="tp-target-head">
                       <span className="mono">{preview ? "matched by block_id" : "missing preview"}</span>
                       {address && <span className="tp-address"><Ic.users size={12} />{address.text}{address.sub ? <em>{address.sub}</em> : null}</span>}
                     </div>
-                    <div className="tp-text">{preview?.target_text || "(not translated in this run)"}</div>
+                    <div className="tp-text">{preview?.target_text ? renderPreviewText(preview.target_text, mentions, "target_surface") : "(not translated in this run)"}</div>
                     {(usedContext.length > 0 || preview?.notes) && (
                       <div className="tp-context">
                         {usedContext.map((id, idx) => {
