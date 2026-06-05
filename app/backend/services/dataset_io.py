@@ -133,6 +133,7 @@ def read_dataset(project_path: Path) -> dict[str, Any]:
         "blocks": blocks,
         "glossary": read_jsonl(canonical / DATASET_FILES["glossary"]),
         "entities": read_jsonl(canonical / DATASET_FILES["entities"]),
+        "entity_relations": read_jsonl(canonical / DATASET_FILES["entity_relations"]),
         "summaries": read_jsonl(canonical / DATASET_FILES["chapter_summaries"]),
         "references": read_jsonl(canonical / DATASET_FILES["manual_reference_subset"]),
         "reference_drafts": read_reference_drafts(project_path),

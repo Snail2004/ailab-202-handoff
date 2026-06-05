@@ -66,7 +66,10 @@ The agent receives one chapter:
   "chapter_summary": {
     "summary_source": "Mira enters the Hollow and meets the Clockkeeper before the Turning.",
     "emotional_tone": "wistful",
-    "motifs": ["time", "awakening"]
+    "motifs": ["time", "awakening"],
+    "key_events": ["Mira asks why dawn comes slowly in the Hollow."],
+    "open_threads": ["Why the Turning changes how time is felt."],
+    "translation_notes": "Keep Turning consistent as Khuc Chuyen."
   }
 }
 ```
@@ -123,6 +126,7 @@ Return exactly one JSON object:
   - `relation_id`: include when a relation supplied the policy; otherwise omit or set null.
 - `used_context`: ids that actually influenced the translation. Use entity ids, term ids, relation ids, and `chapter_id` when `chapter_summary` influenced the block.
 - `notes`: short explanation for non-obvious choices, especially when a glossary-like surface is not used as the glossary concept.
+- `chapter_summary`: may include `summary_source`, `emotional_tone`, `motifs`, `key_events`, `open_threads`, `setting`, `characters_present`, and `translation_notes`. Use these as soft context only; do not explain them inside the translation.
 
 ## Translation Rules
 

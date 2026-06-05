@@ -76,6 +76,7 @@ function adaptDataset(dataset) {
     blocks: dataset.blocks || [],
     glossary: dataset.glossary || [],
     entities: dataset.entities || [],
+    relations: dataset.entity_relations || [],
     summaries: dataset.summaries || [],
     references: mergeReferences(dataset),
     review: dataset.review_state || { blocks: {}, references: {}, summaries: {} },
@@ -250,6 +251,7 @@ function App() {
   const [blocks, setBlocks] = useState([]);
   const [glossary, setGlossary] = useState([]);
   const [entities, setEntities] = useState([]);
+  const [relations, setRelations] = useState([]);
   const [summaries, setSummaries] = useState([]);
   const [references, setReferences] = useState([]);
   const [review, setReview] = useState({ blocks: {}, references: {}, summaries: {} });
@@ -290,6 +292,7 @@ function App() {
     setBlocks(adapted.blocks);
     setGlossary(adapted.glossary);
     setEntities(adapted.entities);
+    setRelations(adapted.relations);
     setSummaries(adapted.summaries);
     setReferences(adapted.references);
     setReview(adapted.review);
@@ -584,6 +587,7 @@ function App() {
   const rpCounts = {
     glossary: { text: blockTerms.length || null },
     entities: { text: blockEntities.length || null },
+    relations: { text: relations.length || null },
     summary: { text: summary?.summary_source ? null : "empty", tone: summary?.summary_source ? "" : "warn" },
     notes: { text: block?.annotations && (block.annotations.implicit_meaning || block.annotations.narrative_note || block.annotations.tone || (block.annotations.motifs || []).length) ? "set" : null },
     reference: { text: refForBlock?.status || null, tone: refForBlock?.status === "draft" ? "warn" : "" },
@@ -620,6 +624,7 @@ function App() {
       setBlocks([]);
       setGlossary([]);
       setEntities([]);
+      setRelations([]);
       setSummaries([]);
       setReferences([]);
       setReview({ blocks: {}, references: {}, summaries: {} });
@@ -653,6 +658,7 @@ function App() {
       setBlocks([]);
       setGlossary([]);
       setEntities([]);
+      setRelations([]);
       setSummaries([]);
       setReferences([]);
       setReview({ blocks: {}, references: {}, summaries: {} });
@@ -695,6 +701,11 @@ function App() {
         setDocInfo({ doc_id: "", metadata: {}, provenance: {} });
         setChapters([]);
         setBlocks([]);
+        setGlossary([]);
+        setEntities([]);
+        setRelations([]);
+        setSummaries([]);
+        setReferences([]);
         setView("project");
       }
       toast("Project deleted", "good", result.doc_id);
@@ -1287,7 +1298,7 @@ function App() {
           <PreviewRightPanel docInfo={docInfo} block={block} />
         ) : (
           <RightPanel openTabs={rightOpenTabs} onToggleTab={toggleRightTab} counts={rpCounts}
-            ctx={{ docInfo, terms: blockTerms, entities: blockEntities, allEntities: entities, block, summary, references, errors, stats, freezeReasons,
+            ctx={{ docInfo, terms: blockTerms, entities: blockEntities, allEntities: entities, relations, block, summary, references, errors, stats, freezeReasons,
               schemaMigrating, onMigrateSchema: migrateSchema,
               onDeleteTerm: deleteTerm, onDeleteEntity: deleteEntity, onUpdateTerm: updateTerm, onUpdateEntity: updateEntity, onUpdateSummary: updateSummary,
               onUpdateBlockNotes: updateBlockNotes,

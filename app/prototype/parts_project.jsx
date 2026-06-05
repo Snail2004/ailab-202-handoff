@@ -356,7 +356,8 @@ function ProjectSourceScreen({
       "- Mention surfaces must be verbatim substrings of clean_text.",
       "- Use left_context/right_context to disambiguate duplicate surfaces.",
       "- Use entity_key consistently; discourse and characters_present_refs must reference entity_key or existing_entity_id.",
-      "- Draft relation_candidates when clear person-person relationship evidence exists; include source_ref, target_ref, relation_type, suggested_address_policy, and evidence. Do not create all-pairs relations.",
+      "- Read known_relations if present. Reuse existing_relation_id when a pair already has a relation; otherwise draft relation_candidates only when clear person-person relationship evidence exists.",
+      "- Relation candidates must include source_ref, target_ref, relation_type, suggested_address_policy, and evidence. Do not create all-pairs relations.",
       "- Entity has no status. Glossary status is assigned by backend, not by you.",
       "- Do not translate full blocks or create reference_vi/draft_vi.",
       "- Do not annotate references. Do not rewrite source text.",
@@ -766,6 +767,7 @@ function ProjectSourceScreen({
                     <span><b>{annotationInput.blocks?.length || 0}</b> blocks</span>
                     <span><b>{annotationInput.known_entities?.length || 0}</b> known entities</span>
                     <span><b>{annotationInput.known_terms?.length || 0}</b> known terms</span>
+                    <span><b>{annotationInput.known_relations?.length || 0}</b> known relations</span>
                   </div>
                 )}
               </div>

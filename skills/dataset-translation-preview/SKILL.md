@@ -24,7 +24,7 @@ Before drafting, read:
    - entity mentions: use `canonical_target` / target aliases consistently.
    - glossary terms: use `expected_target` and avoid `forbidden_variants`.
    - dialogue: use `discourse` speaker/addressee plus `known_relations.address_policy` when available.
-   - chapter memory: use `chapter_summary` for tone and continuity, without adding explanation.
+   - chapter memory: use `chapter_summary` for tone, key events, open threads, and continuity, without adding explanation.
 4. Distinguish glossary concepts from ordinary same-surface verbs or phrases. Do not blindly replace every matching string.
 5. For each block, list `mentions`, `address_applied`, and `used_context` ids that were actually used.
 6. Return exactly one JSON object matching the contract.

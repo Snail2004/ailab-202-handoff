@@ -316,6 +316,8 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertEqual(len(dataset["data"]["chapters"]), 2)
         self.assertIn("reference_drafts", dataset["data"])
         self.assertIn("jobs", dataset["data"])
+        self.assertIn("entity_relations", dataset["data"])
+        self.assertEqual(dataset["data"]["entity_relations"][0]["relation_id"], "rel_001")
 
     def test_project_settings_note_only(self):
         doc_id = "project_settings"
@@ -584,6 +586,8 @@ class BackendApiSmokeTest(unittest.TestCase):
 
         self.assertIn("emotional_tone", bundle["chapter_summary"])
         self.assertIsInstance(bundle["chapter_summary"]["motifs"], list)
+        self.assertIsInstance(bundle["chapter_summary"]["key_events"], list)
+        self.assertIsInstance(bundle["chapter_summary"]["open_threads"], list)
         self._assert_no_preview_input_span_keys(bundle)
 
     def test_translation_preview_input_missing_chapter(self):
@@ -604,6 +608,8 @@ class BackendApiSmokeTest(unittest.TestCase):
         input_payload = annotation_input.get_json()["data"]
         self.assertEqual(input_payload["chapter_id"], chapter_id)
         self.assertEqual(len(input_payload["blocks"]), 4)
+        self.assertIn("known_relations", input_payload)
+        self.assertEqual(input_payload["known_relations"], [])
         self.assertTrue(self._project_root(doc_id).joinpath("working", "annotation", f"{chapter_id}_input.json").exists())
 
         missing_candidate = self.client.get(f"/api/projects/{doc_id}/annotate/candidate?chapter_id={chapter_id}")

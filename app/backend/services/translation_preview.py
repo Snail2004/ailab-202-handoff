@@ -225,6 +225,8 @@ def build_translation_input(project_path: Path, doc_id: str, chapter_id: str) ->
         "summary_source": "",
         "emotional_tone": "",
         "motifs": [],
+        "key_events": [],
+        "open_threads": [],
     }
     for row in read_jsonl(_jsonl_path(project_path, "chapter_summaries")):
         if row.get("chapter_id") == chapter_id:
@@ -232,8 +234,11 @@ def build_translation_input(project_path: Path, doc_id: str, chapter_id: str) ->
                 "summary_source": row.get("summary_source") or "",
                 "emotional_tone": row.get("emotional_tone") or "",
                 "motifs": _list_value(row.get("motifs")),
+                "key_events": _list_value(row.get("key_events")),
+                "open_threads": _list_value(row.get("open_threads")),
                 "setting": row.get("setting"),
                 "characters_present": _list_value(row.get("characters_present")),
+                "translation_notes": row.get("translation_notes"),
             })
             break
 

@@ -32,7 +32,9 @@ The agent receives one chapter at a time:
 }
 ```
 
-Use `known_entities` and `known_terms` to preserve consistency across chapters. Create a new candidate only when the item is not already represented.
+Input may also include `known_relations[]` with `relation_id`, `source_entity_id`, `target_entity_id`, `relation_type`, optional phase fields, and `address_policy`.
+
+Use `known_entities`, `known_terms`, and `known_relations` to preserve consistency across chapters. Create a new candidate only when the item is not already represented.
 
 ## Output
 

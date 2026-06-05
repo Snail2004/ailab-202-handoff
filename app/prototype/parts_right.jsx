@@ -211,6 +211,125 @@ function DiscSelect({ label, entities, value, onChange }) {
   );
 }
 
+/* ---------- RELATIONS ---------- */
+function relationEntityLabel(entityId, entityMap) {
+  const entity = entityMap[entityId];
+  if (!entity) return { label: entityId || "unknown", missing: true };
+  return {
+    label: entity.canonical_target || entity.canonical_source || entity.entity_id,
+    missing: false,
+  };
+}
+
+function termOrDash(value) {
+  return value == null || value === "" ? "-" : value;
+}
+
+function AddressLine({ from, to, policy }) {
+  return (
+    <span className="var mono">
+      {from} -&gt; {to}: self {termOrDash(policy?.self_term)} / address {termOrDash(policy?.address_term)}
+    </span>
+  );
+}
+
+function RelationsTab({ relations, entities, block }) {
+  const safeRelations = relations || [];
+  const entityMap = {};
+  (entities || []).forEach(entity => { entityMap[entity.entity_id] = entity; });
+  const [expanded, setExpanded] = React.useState(safeRelations[0]?.relation_id);
+  React.useEffect(() => {
+    if (safeRelations.length && !safeRelations.some(r => r.relation_id === expanded)) {
+      setExpanded(safeRelations[0].relation_id);
+    }
+  }, [safeRelations, expanded]);
+
+  if (!safeRelations.length) {
+    return <Empty icon={Ic.users} text="No entity relations in this document." sub="Relations are document-level links for character address policy." />;
+  }
+
+  const speakerId = block?.discourse?.speaker_entity_id || "";
+  const addresseeId = block?.discourse?.addressee_entity_id || "";
+
+  return (
+    <div className="tab-body">
+      {safeRelations.map(relation => {
+        const open = expanded === relation.relation_id;
+        const source = relationEntityLabel(relation.source_entity_id, entityMap);
+        const target = relationEntityLabel(relation.target_entity_id, entityMap);
+        const policy = relation.address_policy || {};
+        const evidence = relation.evidence || [];
+        const activeForBlock = speakerId && addresseeId && (
+          (speakerId === relation.source_entity_id && addresseeId === relation.target_entity_id) ||
+          (speakerId === relation.target_entity_id && addresseeId === relation.source_entity_id)
+        );
+        const phaseItems = [
+          ["state", relation.state_label],
+          ["from", relation.valid_from_block_id],
+          ["to", relation.valid_to_block_id],
+          ["trigger", relation.trigger_event_id],
+        ].filter(([, value]) => value);
+
+        return (
+          <div key={relation.relation_id} className={"card" + (open ? " open" : "")}>
+            <button className="card-head" onClick={() => setExpanded(open ? null : relation.relation_id)}>
+              <Ic.chevRight size={11} className="card-caret" style={{ transform: open ? "rotate(90deg)" : "none" }} />
+              <span className="card-title">{source.label}</span>
+              <span className="card-arrow"><Ic.arrowRight size={11} /></span>
+              <span className="card-target">{target.label}</span>
+              <span className="card-spacer" />
+              {activeForBlock && <span className="pill pill-green">current dialogue</span>}
+              <span className="pill pill-grey">{relation.relation_type || "relation"}</span>
+            </button>
+            {open && (
+              <div className="card-body">
+                <div className="sum-meta">
+                  <span className="lockfield"><span className="lf-k">relation</span><span className="lf-v">{relation.relation_id}</span></span>
+                  <span className="lockfield"><span className="lf-k">conf</span><span className="lf-v">{Number(relation.confidence || 0).toFixed(2)}</span></span>
+                </div>
+
+                {(source.missing || target.missing) && (
+                  <div className="ref-explain">
+                    <Ic.alert size={12} />
+                    <span>One side could not be resolved from entities.jsonl; raw entity id is shown.</span>
+                  </div>
+                )}
+
+                <MiniField label="address policy">
+                  <AddressLine from={source.label} to={target.label} policy={policy.source_to_target} />
+                  <AddressLine from={target.label} to={source.label} policy={policy.target_to_source} />
+                </MiniField>
+
+                {phaseItems.length > 0 && (
+                  <MiniField label="phase">
+                    {phaseItems.map(([label, value]) => <span key={label} className="var mono">{label}: {value}</span>)}
+                  </MiniField>
+                )}
+
+                {evidence.length > 0 && (
+                  <MiniField label="evidence">
+                    {evidence.map((item, index) => (
+                      <span key={index} className="var mono">
+                        {item.block_id}{item.surface ? `: "${item.surface}"` : ""}
+                      </span>
+                    ))}
+                  </MiniField>
+                )}
+
+                {relation.notes && (
+                  <MiniField label="notes">
+                    <span>{relation.notes}</span>
+                  </MiniField>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /* ---------- SUMMARY ---------- */
 function SummaryTab({ summary, entities, onUpdateSummary }) {
   const safe = summary || {};
@@ -526,6 +645,7 @@ function Empty({ icon: I, text, sub, good }) {
 const TABS = [
   { id: "glossary", label: "Glossary", icon: Ic.tag },
   { id: "entities", label: "Entities", icon: Ic.users },
+  { id: "relations", label: "Relations", icon: Ic.users },
   { id: "summary", label: "Summary", icon: Ic.doc },
   { id: "notes", label: "Notes", icon: Ic.doc },
   { id: "reference", label: "Reference", icon: Ic.book },
@@ -557,6 +677,7 @@ function RightPanel({ openTabs, onToggleTab, counts, ctx }) {
                 <div className="rp-content">
                   {t.id === "glossary" && <GlossaryTab terms={ctx.terms} onDeleteTerm={ctx.onDeleteTerm} onUpdateTerm={ctx.onUpdateTerm} />}
                   {t.id === "entities" && <EntitiesTab entities={ctx.entities} allEntities={ctx.allEntities} block={ctx.block} onUpdateEntity={ctx.onUpdateEntity} onUpdateDiscourse={ctx.onUpdateDiscourse} onDeleteEntity={ctx.onDeleteEntity} />}
+                  {t.id === "relations" && <RelationsTab relations={ctx.relations} entities={ctx.allEntities} block={ctx.block} />}
                   {t.id === "summary" && <SummaryTab summary={ctx.summary} entities={ctx.allEntities} onUpdateSummary={ctx.onUpdateSummary} />}
                   {t.id === "notes" && <NotesTab block={ctx.block} onUpdateBlockNotes={ctx.onUpdateBlockNotes} />}
                   {t.id === "reference" && <ReferenceTab key={ctx.block.block_id} refs={ctx.references} block={ctx.block} onUpdateReference={ctx.onUpdateReference} onCreateReference={ctx.onCreateReference} onSaveDraft={ctx.onSaveDraft} onMarkReviewed={ctx.onMarkReviewedReference} onLockReference={ctx.onLockReference} />}
