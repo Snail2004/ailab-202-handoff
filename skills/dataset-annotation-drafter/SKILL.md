@@ -24,7 +24,7 @@ Before drafting candidates, read:
 2. Identify entity candidates first. Reuse `existing_entity_id` when a known entity clearly matches; otherwise create a stable `entity_key`.
 3. Identify glossary candidates only for terms that need translation consistency. Do not dual-tag a surface already modeled as an entity.
 4. Draft discourse candidates for speaker/addressee only when the block evidence is clear.
-5. Draft relation candidates for character pairs that have clear text evidence (this drives Vietnamese address/xưng hô): only person–person, never every pair (no N×N).
+5. Draft relation candidates for character pairs with clear text evidence — include `source_ref`, `target_ref`, `relation_type`, `suggested_address_policy`, and `evidence`; only person–person, never every pair (no N×N). This drives Vietnamese address/xưng hô.
 6. Draft one chapter summary candidate with soft context and `characters_present_refs` linked to person entities only.
 7. Add warnings for ambiguity instead of guessing.
 8. Return exactly one JSON object matching the contract.

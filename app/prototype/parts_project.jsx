@@ -356,6 +356,7 @@ function ProjectSourceScreen({
       "- Mention surfaces must be verbatim substrings of clean_text.",
       "- Use left_context/right_context to disambiguate duplicate surfaces.",
       "- Use entity_key consistently; discourse and characters_present_refs must reference entity_key or existing_entity_id.",
+      "- Draft relation_candidates when clear person-person relationship evidence exists; include source_ref, target_ref, relation_type, suggested_address_policy, and evidence. Do not create all-pairs relations.",
       "- Entity has no status. Glossary status is assigned by backend, not by you.",
       "- Do not translate full blocks or create reference_vi/draft_vi.",
       "- Do not annotate references. Do not rewrite source text.",
@@ -780,7 +781,7 @@ function ProjectSourceScreen({
                 <textarea
                   className="json-textarea"
                   value={annotationCandidateText}
-                  placeholder='{"doc_id":"...","chapter_id":"...","entity_candidates":[...]}'
+                  placeholder='{"doc_id":"...","chapter_id":"...","entity_candidates":[...],"glossary_candidates":[...],"relation_candidates":[...],"discourse_candidates":[...],"summary_candidate":{...}}'
                   rows={7}
                   onChange={e => { setAnnotationCandidateText(e.target.value); setAnnotationResolved(null); }}
                 />

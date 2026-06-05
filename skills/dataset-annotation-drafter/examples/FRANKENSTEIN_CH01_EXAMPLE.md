@@ -185,15 +185,56 @@ It is a gold-style reference for evaluating an annotation drafter. It intentiona
 ]
 ```
 
+## Good Relation Candidate
+
+```json
+[
+  {
+    "existing_relation_id": null,
+    "relation_key": "walton_margaret_sibling",
+    "source_ref": "walton",
+    "target_ref": "margaret_saville",
+    "relation_type": "sibling",
+    "suggested_address_policy": {
+      "source_to_target": {"self_term": "anh", "address_term": "em"},
+      "target_to_source": {"self_term": "em", "address_term": "anh"}
+    },
+    "state_label": null,
+    "valid_from_block_id": null,
+    "valid_to_block_id": null,
+    "evidence": [
+      {
+        "block_id": "frankenstein_epub_ch01_b004",
+        "surface": "my dear sister",
+        "left_context": "assure ",
+        "right_context": " of my welfare"
+      },
+      {
+        "block_id": "frankenstein_epub_ch01_b013",
+        "surface": "your affectionate brother",
+        "left_context": "",
+        "right_context": ", R. Walton."
+      }
+    ],
+    "reason": "Walton addresses Margaret as his sister and signs as her brother; the sibling pair drives Vietnamese address",
+    "confidence": 0.9
+  }
+]
+```
+
+Note: relations have no spans. Use `surface` + context for evidence; the backend resolves and writes `entity_relations.jsonl`. For a relationship that changes over the story, emit separate candidates with `state_label` (+ optional `valid_from_block_id` / `valid_to_block_id`).
+
 ## Good Summary Candidate
 
 ```json
 {
   "summary_source": "Letter I introduces Robert Walton writing to Margaret Saville from St. Petersburgh. He reassures her about his safety, describes his northern journey, and frames the voyage as an ambitious enterprise driven by discovery and longing.",
   "characters_present_refs": ["walton", "margaret_saville"],
+  "key_events": ["Walton departs St. Petersburgh and frames the polar voyage as his enterprise"],
   "setting": "St. Petersburgh and the imagined northern route toward the pole",
   "emotional_tone": "aspiring, intimate, anxious",
   "motifs": ["ambition", "exploration", "sibling correspondence"],
+  "open_threads": ["Whether the voyage will reach the pole and at what cost"],
   "confidence": 0.9
 }
 ```
