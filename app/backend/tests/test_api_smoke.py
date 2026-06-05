@@ -260,6 +260,28 @@ class BackendApiSmokeTest(unittest.TestCase):
             "confidence": 0.9,
         }
 
+    def _good_translation_preview(self, doc_id: str, chapter_id: str, block_id: str) -> dict:
+        return {
+            "doc_id": doc_id,
+            "chapter_id": chapter_id,
+            "model": "test-model",
+            "skill_version": "dataset-translation-preview@1",
+            "prompt_version": "test-prompt",
+            "blocks": [
+                {
+                    "block_id": block_id,
+                    "target_text": "Alice saw Bob.",
+                    "mentions": [
+                        {"entity_id": "e_001", "source_surface": "Alice", "target_surface": "Alice"},
+                        {"entity_id": "e_002", "source_surface": "Bob", "target_surface": "Bob"},
+                    ],
+                    "address_applied": None,
+                    "used_context": [chapter_id],
+                    "notes": "Synthetic translation preview fixture.",
+                }
+            ],
+        }
+
     def _minimal_epub(self, opf: str, files: dict[str, str]) -> BytesIO:
         epub = BytesIO()
         with ZipFile(epub, "w") as zf:
@@ -450,6 +472,81 @@ class BackendApiSmokeTest(unittest.TestCase):
         report = self._extraction_report(doc_id)
         self.assertNotIn("normalized_structure", report)
         self.assertFalse(self._project_root(doc_id).joinpath("working", "normalized", "candidate_parts.json").exists())
+
+    def test_translation_preview_import_list_and_load(self):
+        doc_id = "translation_preview_happy"
+        dataset = self._make_txt_project(doc_id)
+        chapter_id = dataset["chapters"][0]["chapter_id"]
+        block = next(item for item in dataset["blocks"] if item["block_type"] != "heading")
+        preview = self._good_translation_preview(doc_id, chapter_id, block["block_id"])
+
+        response = self.client.post(f"/api/projects/{doc_id}/translation-preview/runs", json={"preview": preview})
+        self.assertEqual(response.status_code, 201, response.get_json())
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["warnings"], [])
+        run = payload["data"]["run"]
+        run_id = run["run_id"]
+        self.assertEqual(run["kind"], "translation_preview")
+        self.assertEqual(run["doc_id"], doc_id)
+        self.assertEqual(run["chapter_id"], chapter_id)
+        self.assertEqual(run["blocks"][0]["target_text"], "Alice saw Bob.")
+        self.assertEqual(run["blocks"][0]["used_context"], [chapter_id])
+        self.assertTrue(
+            self._project_root(doc_id)
+            .joinpath("working", "translation_preview", "runs", f"{run_id}.json")
+            .exists()
+        )
+        self.assertTrue(
+            self._project_root(doc_id)
+            .joinpath("working", "translation_preview", "index.json")
+            .exists()
+        )
+        self.assertFalse(self._project_root(doc_id).joinpath("canonical", "translation_preview").exists())
+
+        listed = self.client.get(f"/api/projects/{doc_id}/translation-preview/runs")
+        self.assertEqual(listed.status_code, 200)
+        listed_runs = listed.get_json()["data"]["runs"]
+        self.assertEqual(len(listed_runs), 1)
+        self.assertEqual(listed_runs[0]["run_id"], run_id)
+        self.assertEqual(listed_runs[0]["block_count"], 1)
+
+        loaded = self.client.get(f"/api/projects/{doc_id}/translation-preview/runs/{run_id}")
+        self.assertEqual(loaded.status_code, 200)
+        loaded_run = loaded.get_json()["data"]["run"]
+        self.assertEqual(loaded_run["run_id"], run_id)
+        self.assertEqual(loaded_run["blocks"][0]["block_id"], block["block_id"])
+
+    def test_translation_preview_bad_block_id_rejects(self):
+        doc_id = "translation_preview_bad_block"
+        dataset = self._make_txt_project(doc_id)
+        chapter_id = dataset["chapters"][0]["chapter_id"]
+        preview = self._good_translation_preview(doc_id, chapter_id, "missing_block")
+
+        response = self.client.post(f"/api/projects/{doc_id}/translation-preview/runs", json={"preview": preview})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["errors"][0]["code"], "unknown_block_id")
+        self.assertFalse(
+            self._project_root(doc_id)
+            .joinpath("working", "translation_preview", "runs")
+            .exists()
+        )
+
+    def test_translation_preview_unknown_used_context_warns(self):
+        doc_id = "translation_preview_unknown_context"
+        dataset = self._make_txt_project(doc_id)
+        chapter_id = dataset["chapters"][0]["chapter_id"]
+        block = next(item for item in dataset["blocks"] if item["block_type"] != "heading")
+        preview = self._good_translation_preview(doc_id, chapter_id, block["block_id"])
+        preview["blocks"][0]["used_context"] = [chapter_id, "made_up_context"]
+
+        response = self.client.post(f"/api/projects/{doc_id}/translation-preview/runs", json={"preview": preview})
+        self.assertEqual(response.status_code, 201, response.get_json())
+        warnings = response.get_json()["warnings"]
+        self.assertTrue(any(item["code"] == "unknown_used_context" for item in warnings))
+        run = response.get_json()["data"]["run"]
+        self.assertEqual(run["blocks"][0]["used_context"], [chapter_id, "made_up_context"])
+        self.assertTrue(any(item["code"] == "unknown_used_context" for item in run["warnings"]))
 
     def test_annotation_input_resolve_and_apply(self):
         doc_id = "annotation_apply"

@@ -7,6 +7,7 @@ from routes.history import bp as history_bp
 from routes.package import bp as package_bp
 from routes.projects import bp as projects_bp
 from routes.references import bp as references_bp
+from routes.translation_preview import bp as translation_preview_bp
 from routes.validation import bp as validation_bp
 
 
@@ -19,3 +20,4 @@ def register_blueprints(app: Flask) -> None:
     app.register_blueprint(package_bp, url_prefix="/api")
     app.register_blueprint(history_bp, url_prefix="/api")
     app.register_blueprint(annotation_bp, url_prefix="/api")
+    app.register_blueprint(translation_preview_bp, url_prefix="/api")
