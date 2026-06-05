@@ -226,12 +226,35 @@ class BackendApiSmokeTest(unittest.TestCase):
                     "confidence": 0.8,
                 }
             ],
+            "relation_candidates": [
+                {
+                    "existing_relation_id": None,
+                    "relation_key": "alice_bob_friend",
+                    "source_ref": "alice",
+                    "target_ref": "bob",
+                    "relation_type": "friend",
+                    "suggested_address_policy": {
+                        "source_to_target": {"self_term": "toi", "address_term": "ban"},
+                        "target_to_source": {"self_term": "toi", "address_term": "ban"},
+                    },
+                    "evidence": [
+                        {
+                            "block_id": first["block_id"],
+                            "surface": "Alice saw Bob.",
+                        }
+                    ],
+                    "reason": "Synthetic fixture relation for address-policy apply.",
+                    "confidence": 0.87,
+                }
+            ],
             "summary_candidate": {
                 "summary_source": "Alice sees Bob and smiles at him.",
                 "characters_present_refs": ["alice", "bob"],
+                "key_events": ["Alice sees Bob", "Alice smiles at Bob"],
                 "setting": "A simple test scene",
                 "emotional_tone": "plain",
                 "motifs": ["meeting"],
+                "open_threads": ["Whether Alice and Bob will keep interacting"],
                 "confidence": 0.85,
             },
             "confidence": 0.9,
@@ -456,6 +479,9 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertEqual([item["status"] for item in preview["entities"]], ["ok", "ok"])
         self.assertEqual(preview["glossary"][0]["status"], "ok")
         self.assertEqual(preview["discourse"][0]["speaker_entity_id"], "e_001")
+        self.assertEqual(preview["relations"][0]["status"], "ok")
+        self.assertEqual(preview["relations"][0]["source_entity_id"], "e_001")
+        self.assertEqual(preview["relations"][0]["target_entity_id"], "e_002")
         self.assertTrue(self._project_root(doc_id).joinpath("working", "annotation", f"{chapter_id}_resolved.json").exists())
 
         loaded_candidate = self.client.get(f"/api/projects/{doc_id}/annotate/candidate?chapter_id={chapter_id}")
@@ -476,16 +502,25 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertEqual(counts["glossary"], 1)
         self.assertEqual(counts["occurrences"], 1)
         self.assertEqual(counts["discourse"], 1)
+        self.assertEqual(counts["relations"], 1)
         self.assertEqual(counts["summary"], 1)
 
         entities = self._jsonl_rows(doc_id, "entities.jsonl")
         glossary = self._jsonl_rows(doc_id, "glossary.jsonl")
+        relations = self._jsonl_rows(doc_id, "entity_relations.jsonl")
         summaries = self._jsonl_rows(doc_id, "chapter_summaries.jsonl")
         self.assertEqual(len(entities), 2)
         self.assertEqual(len(glossary), 1)
+        self.assertEqual(len(relations), 1)
+        self.assertEqual(relations[0]["source_entity_id"], "e_001")
+        self.assertEqual(relations[0]["target_entity_id"], "e_002")
+        self.assertEqual(relations[0]["relation_type"], "friend")
+        self.assertEqual(relations[0]["address_policy"]["source_to_target"]["address_term"], "ban")
         self.assertEqual(len(glossary[0]["occurrences"]), 1)
         self.assertEqual(glossary[0]["status"], "candidate")
         self.assertEqual(summaries[0]["characters_present"], ["e_001", "e_002"])
+        self.assertEqual(summaries[0]["key_events"], ["Alice sees Bob", "Alice smiles at Bob"])
+        self.assertEqual(summaries[0]["open_threads"], ["Whether Alice and Bob will keep interacting"])
 
         dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
         block = next(item for item in dataset["blocks"] if item["block_id"] == first["block_id"])
@@ -494,6 +529,93 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertIn("e_001", block["annotations"]["entity_mentions"])
         self.assertIn("g_001", next(item for item in dataset["blocks"] if item["block_id"] == second["block_id"])["annotations"]["term_occurrences"])
         self._assert_project_valid(doc_id)
+
+    def test_annotation_relation_unresolved_ref_is_not_auto_applied(self):
+        doc_id = "annotation_relation_unresolved"
+        _dataset, chapter, first, _second, _third = self._annotation_fixture(doc_id)
+        candidate = {
+            "doc_id": doc_id,
+            "chapter_id": chapter["chapter_id"],
+            "relation_candidates": [
+                {
+                    "relation_key": "dangling_relation",
+                    "source_ref": "missing_source",
+                    "target_ref": "missing_target",
+                    "relation_type": "friend",
+                    "suggested_address_policy": {
+                        "source_to_target": {"self_term": "toi", "address_term": "ban"},
+                        "target_to_source": {"self_term": "toi", "address_term": "ban"},
+                    },
+                    "evidence": [{"block_id": first["block_id"], "surface": "Alice saw Bob."}],
+                }
+            ],
+        }
+        resolved = self.client.post(f"/api/projects/{doc_id}/annotate/resolve", json={"candidate": candidate})
+        self.assertEqual(resolved.status_code, 201)
+        preview = resolved.get_json()["data"]
+        self.assertEqual(preview["relations"][0]["status"], "needs_review")
+        self.assertIn("Unresolved source_ref", " ".join(preview["relations"][0]["messages"]))
+
+        applied = self.client.post(f"/api/projects/{doc_id}/annotate/apply", json={
+            "chapter_id": chapter["chapter_id"],
+            "approved": True,
+            "accept_all_resolved": True,
+        })
+        self.assertEqual(applied.status_code, 201)
+        self.assertEqual(applied.get_json()["data"]["counts"]["relations"], 0)
+        self.assertEqual(self._jsonl_rows(doc_id, "entity_relations.jsonl"), [])
+
+    def test_annotation_relation_overlapping_phases_warn_in_validate(self):
+        doc_id = "annotation_relation_overlap"
+        _dataset, chapter, first, second, _third = self._annotation_fixture(doc_id)
+        candidate = self._good_annotation_candidate(doc_id, chapter["chapter_id"], first, second)
+        candidate["relation_candidates"] = [
+            {
+                "relation_key": "alice_bob_before",
+                "source_ref": "alice",
+                "target_ref": "bob",
+                "relation_type": "friend",
+                "state_label": "before",
+                "valid_from_block_id": first["block_id"],
+                "valid_to_block_id": second["block_id"],
+                "suggested_address_policy": {
+                    "source_to_target": {"self_term": "toi", "address_term": "ban"},
+                    "target_to_source": {"self_term": "toi", "address_term": "ban"},
+                },
+                "evidence": [{"block_id": first["block_id"], "surface": "Alice saw Bob."}],
+            },
+            {
+                "relation_key": "alice_bob_after",
+                "source_ref": "alice",
+                "target_ref": "bob",
+                "relation_type": "friend",
+                "state_label": "after",
+                "valid_from_block_id": first["block_id"],
+                "valid_to_block_id": second["block_id"],
+                "suggested_address_policy": {
+                    "source_to_target": {"self_term": "toi", "address_term": "ban"},
+                    "target_to_source": {"self_term": "toi", "address_term": "ban"},
+                },
+                "evidence": [{"block_id": second["block_id"], "surface": "Alice smiled at Bob."}],
+            },
+        ]
+
+        resolved = self.client.post(f"/api/projects/{doc_id}/annotate/resolve", json={"candidate": candidate})
+        self.assertEqual(resolved.status_code, 201)
+        self.assertEqual([item["status"] for item in resolved.get_json()["data"]["relations"]], ["ok", "ok"])
+        applied = self.client.post(f"/api/projects/{doc_id}/annotate/apply", json={
+            "chapter_id": chapter["chapter_id"],
+            "approved": True,
+            "accept_all_resolved": True,
+        })
+        self.assertEqual(applied.status_code, 201, applied.get_json())
+        self.assertEqual(applied.get_json()["data"]["counts"]["relations"], 2)
+
+        validate = self.client.post(f"/api/projects/{doc_id}/validate")
+        self.assertEqual(validate.status_code, 200)
+        report = validate.get_json()["data"]
+        self.assertTrue(report["ok"], report.get("errors"))
+        self.assertTrue(any("overlapping phase ranges" in item.get("message", "") for item in report.get("warnings", [])))
 
     def test_annotation_ambiguous_surface_is_not_auto_applied(self):
         doc_id = "annotation_ambiguous"

@@ -218,6 +218,7 @@ def build_annotation_input(project_path: Path, doc_id: str, chapter_id: str) -> 
     chapter = _find_chapter(document, chapter_id)
     glossary = read_jsonl(_jsonl_path(project_path, "glossary"))
     entities = read_jsonl(_jsonl_path(project_path, "entities"))
+    relations = read_jsonl(_jsonl_path(project_path, "entity_relations"))
 
     payload = {
         "doc_id": doc_id,
@@ -255,6 +256,19 @@ def build_annotation_input(project_path: Path, doc_id: str, chapter_id: str) -> 
                 "status": row.get("status"),
             }
             for row in glossary
+        ],
+        "known_relations": [
+            {
+                "relation_id": row.get("relation_id"),
+                "source_entity_id": row.get("source_entity_id"),
+                "target_entity_id": row.get("target_entity_id"),
+                "relation_type": row.get("relation_type"),
+                "state_label": row.get("state_label"),
+                "valid_from_block_id": row.get("valid_from_block_id"),
+                "valid_to_block_id": row.get("valid_to_block_id"),
+                "address_policy": row.get("address_policy") or {},
+            }
+            for row in relations
         ],
         "contract": {
             "skill": "dataset-annotation-drafter",
@@ -417,6 +431,108 @@ def _resolve_glossary_candidate(
     }
 
 
+def _clean_address_pair(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    pair: dict[str, Any] = {}
+    if "self_term" in source:
+        pair["self_term"] = source.get("self_term")
+    if "address_term" in source:
+        pair["address_term"] = source.get("address_term")
+    return pair
+
+
+def _clean_address_policy(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    policy: dict[str, Any] = {}
+    for key in ("source_to_target", "target_to_source"):
+        pair = _clean_address_pair(source.get(key))
+        if pair:
+            policy[key] = pair
+    return policy
+
+
+def _resolve_relation_candidate(
+    row: dict[str, Any],
+    *,
+    doc_id: str,
+    block_by_id: dict[str, dict[str, Any]],
+    existing_relations: list[dict[str, Any]],
+    entity_key_map: dict[str, str],
+    next_relation_id: str,
+) -> dict[str, Any]:
+    existing_id = str(row.get("existing_relation_id") or "").strip()
+    relation_by_id = {item.get("relation_id"): item for item in existing_relations}
+    messages = []
+    matched_existing = relation_by_id.get(existing_id) if existing_id else None
+    if existing_id and matched_existing is None:
+        messages.append(f"Unknown existing_relation_id: {existing_id}")
+
+    source_ref = str(row.get("source_ref") or row.get("source_entity_id") or "").strip()
+    target_ref = str(row.get("target_ref") or row.get("target_entity_id") or "").strip()
+    source_id = entity_key_map.get(source_ref) if source_ref else None
+    target_id = entity_key_map.get(target_ref) if target_ref else None
+    if not source_ref:
+        messages.append("Missing source_ref.")
+    elif not source_id:
+        messages.append(f"Unresolved source_ref: {source_ref}")
+    if not target_ref:
+        messages.append("Missing target_ref.")
+    elif not target_id:
+        messages.append(f"Unresolved target_ref: {target_ref}")
+    if source_id and target_id and source_id == target_id:
+        messages.append("source_ref and target_ref resolve to the same entity.")
+
+    relation_type = str(row.get("relation_type") or "").strip()
+    if not relation_type:
+        messages.append("Missing relation_type.")
+
+    state_label = str(row.get("state_label") or "").strip() or None
+    valid_from = str(row.get("valid_from_block_id") or "").strip() or None
+    valid_to = str(row.get("valid_to_block_id") or "").strip() or None
+    trigger_event_id = str(row.get("trigger_event_id") or "").strip() or None
+    if valid_from and str(valid_from) not in block_by_id:
+        messages.append(f"valid_from_block_id not found: {valid_from}")
+    if valid_to and str(valid_to) not in block_by_id:
+        messages.append(f"valid_to_block_id not found: {valid_to}")
+
+    evidence = []
+    for raw in _ensure_list(row.get("evidence")):
+        block_id = str(raw.get("block_id") or "")
+        if not block_id or block_id not in block_by_id:
+            messages.append(f"Evidence block not found: {block_id or '<missing>'}")
+            continue
+        item = {"block_id": block_id}
+        if raw.get("surface"):
+            item["surface"] = str(raw.get("surface"))
+        evidence.append(item)
+    if not evidence:
+        messages.append("At least one evidence block is required.")
+
+    relation_id = existing_id if matched_existing else next_relation_id
+    return {
+        "status": "ok" if not messages else "needs_review",
+        "relation_id": relation_id,
+        "existing_relation_id": existing_id or None,
+        "is_new": matched_existing is None,
+        "relation_key": row.get("relation_key"),
+        "doc_id": doc_id,
+        "source_ref": source_ref,
+        "source_entity_id": source_id,
+        "target_ref": target_ref,
+        "target_entity_id": target_id,
+        "relation_type": relation_type,
+        "state_label": state_label,
+        "valid_from_block_id": valid_from,
+        "valid_to_block_id": valid_to,
+        "trigger_event_id": trigger_event_id,
+        "address_policy": _clean_address_policy(row.get("suggested_address_policy") or row.get("address_policy")),
+        "evidence": evidence,
+        "notes": row.get("notes") or row.get("reason"),
+        "confidence": row.get("confidence", 0.8),
+        "messages": messages,
+    }
+
+
 def resolve_annotation_candidate(project_path: Path, doc_id: str, candidate: dict[str, Any], user: str = "local") -> dict[str, Any]:
     if not isinstance(candidate, dict):
         raise AnnotationError("invalid_candidate", "Annotation candidate JSON object is required.")
@@ -431,11 +547,17 @@ def resolve_annotation_candidate(project_path: Path, doc_id: str, candidate: dic
     block_by_id = _block_map(document)
     existing_entities = read_jsonl(_jsonl_path(project_path, "entities"))
     existing_terms = read_jsonl(_jsonl_path(project_path, "glossary"))
+    existing_relations = read_jsonl(_jsonl_path(project_path, "entity_relations"))
     next_entity_id = _next_id(existing_entities, "entity_id", "e")
     next_term_id = _next_id(existing_terms, "term_id", "g")
+    next_relation_id = _next_id(existing_relations, "relation_id", "rel")
 
     resolved_entities = []
-    entity_key_map: dict[str, str] = {}
+    entity_key_map: dict[str, str] = {
+        str(entity.get("entity_id")): str(entity.get("entity_id"))
+        for entity in existing_entities
+        if entity.get("entity_id")
+    }
     next_entity_index = int(next_entity_id.split("_")[-1])
     for row in _ensure_list(candidate.get("entity_candidates")):
         entity_id = f"e_{next_entity_index:03d}"
@@ -502,6 +624,22 @@ def resolve_annotation_candidate(project_path: Path, doc_id: str, candidate: dic
             "messages": messages,
         })
 
+    resolved_relations = []
+    next_relation_index = int(next_relation_id.split("_")[-1])
+    for row in _ensure_list(candidate.get("relation_candidates")):
+        relation_id = f"rel_{next_relation_index:03d}"
+        resolved = _resolve_relation_candidate(
+            row,
+            doc_id=doc_id,
+            block_by_id=block_by_id,
+            existing_relations=existing_relations,
+            entity_key_map=entity_key_map,
+            next_relation_id=relation_id,
+        )
+        resolved_relations.append(resolved)
+        if resolved.get("is_new"):
+            next_relation_index += 1
+
     summary = candidate.get("summary_candidate") if isinstance(candidate.get("summary_candidate"), dict) else None
     resolved_summary = None
     if summary:
@@ -548,6 +686,7 @@ def resolve_annotation_candidate(project_path: Path, doc_id: str, candidate: dic
         "entities": resolved_entities,
         "glossary": resolved_glossary,
         "discourse": resolved_discourse,
+        "relations": resolved_relations,
         "summary": resolved_summary,
         "warnings": candidate.get("warnings", []),
         "paths": {
@@ -561,6 +700,7 @@ def resolve_annotation_candidate(project_path: Path, doc_id: str, candidate: dic
         "chapter_id": chapter_id,
         "entities": len(resolved_entities),
         "glossary": len(resolved_glossary),
+        "relations": len(resolved_relations),
     }, user)
     return result
 
@@ -579,6 +719,7 @@ def _validate_full_dataset(
     glossary: list[dict[str, Any]],
     entities: list[dict[str, Any]],
     summaries: list[dict[str, Any]],
+    relations: list[dict[str, Any]],
 ) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -593,6 +734,7 @@ def _validate_full_dataset(
         write_jsonl_atomic(tmp_path / DATASET_FILES["glossary"], glossary)
         write_jsonl_atomic(tmp_path / DATASET_FILES["entities"], entities)
         write_jsonl_atomic(tmp_path / DATASET_FILES["chapter_summaries"], summaries)
+        write_jsonl_atomic(tmp_path / DATASET_FILES["entity_relations"], relations)
         (tmp_path / DATASET_FILES["manual_reference_subset"]).touch(exist_ok=True)
         proc = subprocess.run(
             [
@@ -633,10 +775,20 @@ def _apply_resolved(
     block_by_id = _block_map(document)
     glossary = read_jsonl(_jsonl_path(project_path, "glossary"))
     entities = read_jsonl(_jsonl_path(project_path, "entities"))
+    relations = read_jsonl(_jsonl_path(project_path, "entity_relations"))
     summaries = read_jsonl(_jsonl_path(project_path, "chapter_summaries"))
     entity_by_id = {row.get("entity_id"): row for row in entities}
     term_by_id = {row.get("term_id"): row for row in glossary}
-    counts = {"entities": 0, "entity_mentions": 0, "glossary": 0, "occurrences": 0, "discourse": 0, "summary": 0}
+    relation_by_id = {row.get("relation_id"): row for row in relations}
+    counts = {
+        "entities": 0,
+        "entity_mentions": 0,
+        "glossary": 0,
+        "occurrences": 0,
+        "discourse": 0,
+        "relations": 0,
+        "summary": 0,
+    }
 
     for item in resolved.get("entities", []):
         if not _accepted(item, accept_all, decisions, f"entity:{item.get('entity_id')}"):
@@ -744,6 +896,47 @@ def _apply_resolved(
             discourse["addressee_entity_id"] = item["addressee_entity_id"]
         counts["discourse"] += 1
 
+    for item in resolved.get("relations", []):
+        if not _accepted(item, accept_all, decisions, f"relation:{item.get('relation_id')}"):
+            continue
+        source_id = item.get("source_entity_id")
+        target_id = item.get("target_entity_id")
+        if source_id not in entity_by_id:
+            raise AnnotationError("missing_entity", f"Relation source entity not found at apply: {source_id}")
+        if target_id not in entity_by_id:
+            raise AnnotationError("missing_entity", f"Relation target entity not found at apply: {target_id}")
+        relation_id = item.get("relation_id")
+        row = relation_by_id.get(relation_id)
+        if row is None:
+            row = {"relation_id": relation_id, "doc_id": doc_id}
+            relations.append(row)
+            relation_by_id[relation_id] = row
+        row.update({
+            "doc_id": doc_id,
+            "source_entity_id": source_id,
+            "target_entity_id": target_id,
+            "relation_type": item.get("relation_type"),
+            "evidence": item.get("evidence", []),
+        })
+        for key in (
+            "state_label",
+            "valid_from_block_id",
+            "valid_to_block_id",
+            "trigger_event_id",
+            "notes",
+        ):
+            if key in item:
+                row[key] = item[key]
+            elif key in row:
+                row.pop(key, None)
+        if item.get("address_policy"):
+            row["address_policy"] = item["address_policy"]
+        else:
+            row.pop("address_policy", None)
+        if "confidence" in item:
+            row["confidence"] = item["confidence"]
+        counts["relations"] += 1
+
     summary = resolved.get("summary")
     if summary and _accepted(summary, accept_all, decisions, "summary"):
         row = next((item for item in summaries if item.get("chapter_id") == summary.get("chapter_id")), None)
@@ -767,10 +960,11 @@ def _apply_resolved(
                 row[key] = summary[key]
         counts["summary"] = 1
 
-    _validate_full_dataset(project_path, document, glossary, entities, summaries)
+    _validate_full_dataset(project_path, document, glossary, entities, summaries, relations)
     _write_document(project_path, document)
     write_jsonl_atomic(_jsonl_path(project_path, "entities"), entities)
     write_jsonl_atomic(_jsonl_path(project_path, "glossary"), glossary)
+    write_jsonl_atomic(_jsonl_path(project_path, "entity_relations"), relations)
     write_jsonl_atomic(_jsonl_path(project_path, "chapter_summaries"), summaries)
     return counts
 

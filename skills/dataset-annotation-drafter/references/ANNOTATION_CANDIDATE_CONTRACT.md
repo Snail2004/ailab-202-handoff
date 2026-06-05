@@ -123,9 +123,11 @@ Return exactly one JSON object:
   "summary_candidate": {
     "summary_source": "Letter I introduces Walton writing to Margaret Saville from St. Petersburgh about his northern voyage.",
     "characters_present_refs": ["walton", "margaret_saville"],
+    "key_events": ["Walton departs from St. Petersburgh toward the northern pole"],
     "setting": "St. Petersburgh and the imagined northern route toward the pole",
     "emotional_tone": "aspiring, intimate, anxious",
     "motifs": ["ambition", "exploration", "sibling correspondence"],
+    "open_threads": ["Whether the voyage will reach the pole and what it will cost"],
     "confidence": 0.85
   },
   "warnings": [
@@ -149,6 +151,7 @@ Return exactly one JSON object:
 - `surface`: copy exact text from `clean_text`.
 - `left_context` / `right_context`: provide enough local context to distinguish duplicate surfaces. Prefer 5-40 characters on each side.
 - `speaker_ref`, `addressee_ref`, and `characters_present_refs`: reference either an `entity_key` emitted in this JSON or an `existing_entity_id` from input.
+- `summary_candidate.key_events` / `open_threads`: optional soft hints (short free-text list). Fill only when clearly supported by the chapter; they are not graded. Map directly to `chapter_summaries.jsonl` `key_events` / `open_threads`.
 - `source_ref` / `target_ref` (relations): reference an `entity_key` emitted here or an `existing_entity_id` from input. Convention: `source` IS the `relation_type` of `target` (e.g. `relation_type=parent` => source is the parent of target).
 - `existing_relation_id`: set when the candidate matches a known relation; otherwise `null`. `relation_key` is required when `null` (stable lowercase slug).
 - `relation_type`: free-text with recommended values (sibling/parent/child/spouse/friend/master/servant/mentor/stranger/rival/guardian).
