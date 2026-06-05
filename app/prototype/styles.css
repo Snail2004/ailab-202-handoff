@@ -661,6 +661,12 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 .ref-foot { display: flex; flex-wrap: wrap; gap: 13px; }
 .ref-actions { display: flex; gap: 7px; justify-content: flex-end; }
 
+.schema-migrate { display: flex; align-items: center; gap: 10px; justify-content: space-between; border: 1px solid #bed4ff; background: #f4f7ff; border-radius: var(--r-md); padding: 10px 11px; margin-bottom: 8px; }
+.schema-migrate-text { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.schema-migrate-title { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--accent-ink); }
+.schema-migrate-sub { font-size: 11px; line-height: 1.45; color: var(--ink-3); }
+.schema-migrate .btn { flex: 0 0 auto; }
+
 .val-group { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
 .val-file { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; font-family: var(--font-mono); color: var(--ink-2); padding: 2px 2px 4px; }
 .val-file .val-count { margin-left: 4px; font-size: 10px; background: var(--panel-3); color: var(--ink-3); padding: 0 6px; border-radius: 999px; }

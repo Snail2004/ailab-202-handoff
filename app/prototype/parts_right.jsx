@@ -401,13 +401,39 @@ function ReferenceTab({ refs, block, onUpdateReference, onCreateReference, onSav
 }
 
 /* ---------- VALIDATE ---------- */
-function ValidateTab({ errors, onJump }) {
+function needsSchemaMigration(errors, docInfo) {
+  const version = docInfo?.schema_version || "";
+  if (version && version !== "1.5.0") return true;
+  return (errors || []).some(e => {
+    const msg = String(e.message || "").toLowerCase();
+    return (
+      (e.file === "document.json" && String(e.location || "").includes("schema_version")) ||
+      (e.file === "entity_relations.jsonl" && msg.includes("not present"))
+    );
+  });
+}
+
+function ValidateTab({ errors, onJump, docInfo, onMigrateSchema, schemaMigrating }) {
   const byFile = {};
   errors.forEach(e => { (byFile[e.file] = byFile[e.file] || []).push(e); });
   const files = Object.keys(byFile);
-  if (!files.length) return <Empty icon={Ic.checkCircle} text="No validation errors." sub="All checks pass - freeze still requires review gates." good />;
+  const showMigration = needsSchemaMigration(errors, docInfo);
+  if (!files.length && !showMigration) return <Empty icon={Ic.checkCircle} text="No validation errors." sub="All checks pass - freeze still requires review gates." good />;
   return (
     <div className="tab-body">
+      {showMigration && (
+        <div className="schema-migrate">
+          <div className="schema-migrate-text">
+            <div className="schema-migrate-title"><Ic.layers size={12} />Schema upgrade available</div>
+            <div className="schema-migrate-sub">
+              Current project is <span className="mono">{docInfo?.schema_version || "unknown"}</span>. Upgrade writes <span className="mono">schema_version=1.5.0</span> and creates empty <span className="mono">entity_relations.jsonl</span>; it does not re-extract or touch annotations/drafts.
+            </div>
+          </div>
+          <button className="btn primary" disabled={schemaMigrating} onClick={onMigrateSchema}>
+            <Ic.checkCircle size={13} />{schemaMigrating ? "Migrating..." : "Migrate to 1.5"}
+          </button>
+        </div>
+      )}
       {files.map(f => (
         <div key={f} className="val-group">
           <div className="val-file"><Ic.file size={12} />{f}<span className="val-count mono">{byFile[f].length}</span></div>
@@ -534,7 +560,7 @@ function RightPanel({ openTabs, onToggleTab, counts, ctx }) {
                   {t.id === "summary" && <SummaryTab summary={ctx.summary} entities={ctx.allEntities} onUpdateSummary={ctx.onUpdateSummary} />}
                   {t.id === "notes" && <NotesTab block={ctx.block} onUpdateBlockNotes={ctx.onUpdateBlockNotes} />}
                   {t.id === "reference" && <ReferenceTab key={ctx.block.block_id} refs={ctx.references} block={ctx.block} onUpdateReference={ctx.onUpdateReference} onCreateReference={ctx.onCreateReference} onSaveDraft={ctx.onSaveDraft} onMarkReviewed={ctx.onMarkReviewedReference} onLockReference={ctx.onLockReference} />}
-                  {t.id === "validate" && <ValidateTab errors={ctx.errors} onJump={ctx.onJump} />}
+                  {t.id === "validate" && <ValidateTab errors={ctx.errors} docInfo={ctx.docInfo} schemaMigrating={ctx.schemaMigrating} onMigrateSchema={ctx.onMigrateSchema} onJump={ctx.onJump} />}
                   {t.id === "progress" && <ProgressTab stats={ctx.stats} freezeReasons={ctx.freezeReasons} history={ctx.history} />}
                 </div>
               )}

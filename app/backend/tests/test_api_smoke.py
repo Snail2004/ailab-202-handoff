@@ -622,6 +622,37 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertTrue(payload["data"]["ok"])
         self.assertEqual(payload["data"]["exit_code"], 0)
 
+    def test_migrate_schema_1_4_to_1_5_creates_relation_sidecar(self):
+        doc_id = "schema_migrate"
+        self._make_txt_project(doc_id)
+        canonical = self._project_root(doc_id) / "canonical"
+        document_path = canonical / "document.json"
+        relations_path = canonical / "entity_relations.jsonl"
+        document = json.loads(document_path.read_text(encoding="utf-8"))
+        document["schema_version"] = "1.4.0"
+        document_path.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        if relations_path.exists():
+            relations_path.unlink()
+
+        response = self.client.post(f"/api/projects/{doc_id}/migrate-schema", json={"user": "tester"})
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()["data"]
+        self.assertEqual(payload["schema_version_before"], "1.4.0")
+        self.assertEqual(payload["schema_version_after"], "1.5.0")
+        self.assertTrue(payload["validation"]["ok"], payload["validation"].get("errors"))
+        self.assertTrue(relations_path.exists())
+        self.assertTrue(any(path.name.startswith("document.json.bak-") for path in canonical.iterdir()))
+        migrated = json.loads(document_path.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["schema_version"], "1.5.0")
+
+        dataset = self.client.get(f"/api/projects/{doc_id}/dataset").get_json()["data"]
+        self.assertTrue(dataset["history_state"]["can_undo"])
+        undo = self.client.post(f"/api/projects/{doc_id}/undo", json={"user": "tester"})
+        self.assertEqual(undo.status_code, 200)
+        restored = json.loads(document_path.read_text(encoding="utf-8"))
+        self.assertEqual(restored["schema_version"], "1.4.0")
+        self.assertFalse(relations_path.exists())
+
     def test_undo_redo_clean_text(self):
         doc_id = "history_clean"
         dataset = self._make_txt_project(doc_id)

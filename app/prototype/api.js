@@ -95,6 +95,7 @@
     undo: (docId, payload) => request(`/projects/${encodeURIComponent(docId)}/undo`, { method: "POST", body: payload || {} }),
     redo: (docId, payload) => request(`/projects/${encodeURIComponent(docId)}/redo`, { method: "POST", body: payload || {} }),
     validate: (docId, payload) => request(`/projects/${encodeURIComponent(docId)}/validate`, { method: "POST", body: payload || {} }),
+    migrateSchema: (docId, payload) => request(`/projects/${encodeURIComponent(docId)}/migrate-schema`, { method: "POST", body: payload || {} }),
     patchMetadata: (docId, payload) => request(`/projects/${encodeURIComponent(docId)}/metadata`, { method: "PATCH", body: payload }),
     patchBlock: (docId, blockId, payload) => request(`/projects/${encodeURIComponent(docId)}/blocks/${encodeURIComponent(blockId)}`, { method: "PATCH", body: payload }),
     patchBlockNotes: (docId, blockId, payload) => request(`/projects/${encodeURIComponent(docId)}/blocks/${encodeURIComponent(blockId)}/notes`, { method: "PATCH", body: payload }),

@@ -23,6 +23,7 @@ DATASET_FILES = {
     "entities": "entities.jsonl",
     "chapter_summaries": "chapter_summaries.jsonl",
     "manual_reference_subset": "manual_reference_subset.jsonl",
+    "entity_relations": "entity_relations.jsonl",
 }
 
 PROJECT_SUBDIRS = ("raw", "canonical", "working", "logs", "exports")

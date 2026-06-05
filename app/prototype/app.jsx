@@ -241,6 +241,7 @@ function App() {
   const [toasts, setToasts] = useState([]);
   const [modal, setModal] = useState(null);
   const [dirty, setDirty] = useState(false);
+  const [schemaMigrating, setSchemaMigrating] = useState(false);
   const [lastSaved, setLastSaved] = useState("just now");
   const [loading, setLoading] = useState(true);
   const [bootError, setBootError] = useState(null);
@@ -1089,6 +1090,29 @@ function App() {
       toast("Validation failed", "bad", errorMessage(err));
     }
   }
+
+  async function migrateSchema() {
+    if (!activeDocId || schemaMigrating) return;
+    openRightTab("validate");
+    setSchemaMigrating(true);
+    touchStart();
+    try {
+      const result = await API.migrateSchema(activeDocId, { user: currentUser() });
+      await loadDataset(activeDocId, { silent: true });
+      if (result.validation) setErrors(normalizeErrors(result.validation));
+      touchDone();
+      const ok = result.validation?.ok !== false;
+      const actions = (result.actions || []).join(" · ");
+      toast(ok ? "Schema migrated to 1.5" : "Schema migrated with validation issues", ok ? "good" : "bad", actions || "Project files updated.");
+    } catch (err) {
+      setErrors((err.errors || []).map(e => ({ severity: "error", ...e })));
+      touchDone();
+      toast("Schema migration failed", "bad", errorMessage(err));
+    } finally {
+      setSchemaMigrating(false);
+    }
+  }
+
   function jumpTo(e) { if (e.block_id) { selectBlock(e.block_id); toast(`Jumped to ${e.block_id}`, "info"); } }
   function doExport() { setModal({ kind: "export" }); }
   function doFreeze() { setModal({ kind: "freeze" }); }
@@ -1235,7 +1259,8 @@ function App() {
           onChangeType={changeType} onToggleOpening={() => toggleOpening(selectedId)} onToggleFlag={(flag) => toggleFlag(flag, selectedId)} onMarkReviewed={markReviewed}
           onAddGlossary={addGlossary} onAddEntity={addEntity} />
         <RightPanel openTabs={rightOpenTabs} onToggleTab={toggleRightTab} counts={rpCounts}
-          ctx={{ terms: blockTerms, entities: blockEntities, allEntities: entities, block, summary, references, errors, stats, freezeReasons,
+          ctx={{ docInfo, terms: blockTerms, entities: blockEntities, allEntities: entities, block, summary, references, errors, stats, freezeReasons,
+            schemaMigrating, onMigrateSchema: migrateSchema,
             onDeleteTerm: deleteTerm, onDeleteEntity: deleteEntity, onUpdateTerm: updateTerm, onUpdateEntity: updateEntity, onUpdateSummary: updateSummary,
             onUpdateBlockNotes: updateBlockNotes,
             onUpdateReference: updateReference, onCreateReference: createReferenceDraft, onSaveDraft: saveDraft, onMarkReviewedReference: markReviewedReference,
@@ -1250,7 +1275,7 @@ function App() {
             <button className="btn primary" onClick={confirmExport}>Export package</button></>}>
           <p>Exports the current dataset package. It may still be a working package if validation or review gates are not clear.</p>
           <ul className="file-list">
-            {["document.json","glossary.jsonl","entities.jsonl","chapter_summaries.jsonl","manual_reference_subset.jsonl"].map(f =>
+            {["document.json","glossary.jsonl","entities.jsonl","entity_relations.jsonl","chapter_summaries.jsonl","manual_reference_subset.jsonl"].map(f =>
               <li key={f}><Ic.file size={12} /><span className="mono">{f}</span></li>)}
           </ul>
           <p className="muted">{errorCount > 0 ? <><Ic.alert size={11} /> {errorCount} validation error(s) present.</> : "No validation errors in the current report."}</p>

@@ -17,6 +17,7 @@ dataset/
     entity_relation.schema.json   # one line of entity_relations.jsonl
   tools/
     validate.py                   # schema + referential integrity validator
+    migrate_1_4_to_1_5.py         # safe project/dataset migration helper
     requirements.txt
     README.md
 ```
@@ -70,6 +71,41 @@ Exit code: `0` = pass, `1` = validation errors, `2` = setup/path/dependency erro
 ```
 
 Each error/warning object has `file`, `location`, `message`, `severity`, and best-effort `block_id` / `chapter_id` when the validator can infer them.
+
+## Migrate 1.4.0 Projects To 1.5.0
+
+Schema 1.5.0 only adds the optional `entity_relations.jsonl` sidecar and bumps
+`document.schema_version`. Existing annotation work should be migrated in place,
+not re-extracted.
+
+In the web tool, open the project, run **Validate**, then click **Migrate to
+1.5** in the Validate panel when the schema-version card appears.
+
+Pass either a project folder:
+
+```powershell
+python dataset_spec\tools\migrate_1_4_to_1_5.py ailab_projects\<doc_id> --validate
+```
+
+or the canonical dataset folder directly:
+
+```powershell
+python dataset_spec\tools\migrate_1_4_to_1_5.py ailab_projects\<doc_id>\canonical --validate
+```
+
+The script:
+
+- updates `canonical/document.json` from `schema_version: "1.4.0"` to `"1.5.0"`;
+- creates an empty optional `canonical/entity_relations.jsonl` if missing;
+- writes a timestamped `document.json.bak-*` backup before changing the version;
+- does **not** re-extract, rewrite blocks, or touch `working/drafts.json`,
+  annotation state, history, or raw source files.
+
+Preview without changing files:
+
+```powershell
+python dataset_spec\tools\migrate_1_4_to_1_5.py ailab_projects\<doc_id> --dry-run
+```
 
 ## Validator Layers
 
