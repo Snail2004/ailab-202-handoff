@@ -594,6 +594,20 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 .tp-control span { font-size: 10.5px; color: var(--ink-4); text-transform: uppercase; font-weight: 800; }
 .tp-control select { height: 32px; border: 1px solid var(--border-2); border-radius: var(--r-sm); background: var(--panel); padding: 0 9px; font-size: 12.5px; }
 .tp-run-meta { min-height: 32px; display: inline-flex; align-items: center; color: var(--ink-4); font-size: 11px; }
+.tp-loop-panel { display: flex; flex-direction: column; gap: 9px; border: 1px solid var(--border); background: var(--panel); border-radius: var(--r-md); padding: 11px 12px; box-shadow: var(--shadow-card); }
+.tp-loop-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.tp-loop-head b { display: block; font-size: 13px; color: var(--ink); }
+.tp-loop-head span { display: block; margin-top: 3px; color: var(--ink-4); font-size: 11.5px; line-height: 1.45; }
+.tp-loop-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 7px; }
+.tp-json-textarea { width: 100%; min-height: 180px; max-height: 320px; resize: vertical; border: 1px solid var(--border-2); border-radius: var(--r-md); background: var(--panel-2); color: var(--ink); padding: 10px 11px; font-family: var(--font-mono); font-size: 11px; line-height: 1.5; outline: none; }
+.tp-json-textarea:focus { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-weak); background: var(--panel); }
+.tp-json-textarea[readonly] { color: var(--ink-2); background: #fbfcfd; }
+.tp-json-textarea.compact { min-height: 110px; }
+.tp-import-box { display: flex; flex-direction: column; gap: 8px; }
+.tp-import-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 7px; }
+.tp-loop-note { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; border-radius: 999px; padding: 4px 9px; font-size: 11px; font-weight: 650; }
+.tp-loop-note.good { background: var(--green-weak); color: var(--green); }
+.tp-loop-note.warn { background: var(--amber-weak); color: var(--amber); }
 .tp-warning { display: flex; align-items: flex-start; gap: 8px; border: 1px solid #efd8a7; background: var(--amber-weak); color: var(--amber); border-radius: var(--r-md); padding: 9px 11px; font-size: 12px; }
 .tp-warning.bad { border-color: #f1b8b3; background: var(--red-weak); color: var(--red); }
 .tp-warning-list { display: flex; flex-wrap: wrap; gap: 6px 10px; margin-top: 3px; }

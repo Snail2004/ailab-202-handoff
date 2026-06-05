@@ -282,6 +282,15 @@ class BackendApiSmokeTest(unittest.TestCase):
             ],
         }
 
+    def _assert_no_preview_input_span_keys(self, value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                self.assertNotIn(key, {"span", "start", "end", "mentions", "occurrences"})
+                self._assert_no_preview_input_span_keys(child)
+        elif isinstance(value, list):
+            for child in value:
+                self._assert_no_preview_input_span_keys(child)
+
     def _minimal_epub(self, opf: str, files: dict[str, str]) -> BytesIO:
         epub = BytesIO()
         with ZipFile(epub, "w") as zf:
@@ -547,6 +556,40 @@ class BackendApiSmokeTest(unittest.TestCase):
         run = response.get_json()["data"]["run"]
         self.assertEqual(run["blocks"][0]["used_context"], [chapter_id, "made_up_context"])
         self.assertTrue(any(item["code"] == "unknown_used_context" for item in run["warnings"]))
+
+    def test_translation_preview_input_bundle(self):
+        response = self.client.get("/api/projects/gold_demo_01/translation-preview/input?chapter_id=gold_demo_01_ch01")
+        self.assertEqual(response.status_code, 200, response.get_json())
+        bundle = response.get_json()["data"]
+        self.assertEqual(bundle["doc_id"], "gold_demo_01")
+        self.assertEqual(bundle["chapter_id"], "gold_demo_01_ch01")
+        self.assertEqual(len(bundle["blocks"]), 7)
+        self.assertTrue(all(block["block_id"].startswith("gold_demo_01_ch01_") for block in bundle["blocks"]))
+
+        b004 = next(block for block in bundle["blocks"] if block["block_id"] == "gold_demo_01_ch01_b004")
+        self.assertEqual(b004["discourse"]["speaker_entity_id"], "e_001")
+        self.assertEqual(b004["discourse"]["addressee_entity_id"], "e_002")
+
+        entity = next(row for row in bundle["known_entities"] if row["entity_id"] == "e_002")
+        self.assertEqual(entity["canonical_target"], "Người Giữ Đồng Hồ")
+        self.assertNotIn("mentions", entity)
+
+        term = next(row for row in bundle["known_terms"] if row["term_id"] == "g_001")
+        self.assertEqual(term["forbidden_variants"], ["sự xoay", "vòng quay"])
+        self.assertNotIn("occurrences", term)
+
+        relation = next(row for row in bundle["known_relations"] if row["relation_id"] == "rel_001")
+        self.assertEqual(relation["address_policy"]["target_to_source"]["address_term"], "ông")
+        self.assertNotIn("evidence", relation)
+
+        self.assertIn("emotional_tone", bundle["chapter_summary"])
+        self.assertIsInstance(bundle["chapter_summary"]["motifs"], list)
+        self._assert_no_preview_input_span_keys(bundle)
+
+    def test_translation_preview_input_missing_chapter(self):
+        response = self.client.get("/api/projects/gold_demo_01/translation-preview/input?chapter_id=missing_chapter")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.get_json()["errors"][0]["code"], "missing_chapter")
 
     def test_annotation_input_resolve_and_apply(self):
         doc_id = "annotation_apply"

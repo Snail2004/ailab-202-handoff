@@ -721,6 +721,63 @@ function renderPreviewText(text, mentions, surfaceKey) {
   return pieces;
 }
 
+function prettyJson(value) {
+  return JSON.stringify(value || {}, null, 2);
+}
+
+async function copyPlainText(text) {
+  const value = String(text || "");
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const node = document.createElement("textarea");
+  node.value = value;
+  node.setAttribute("readonly", "");
+  node.style.position = "fixed";
+  node.style.opacity = "0";
+  document.body.appendChild(node);
+  node.select();
+  document.execCommand("copy");
+  document.body.removeChild(node);
+}
+
+function downloadJsonFile(filename, data) {
+  const blob = new Blob([prettyJson(data)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function translationPreviewPrompt(docId, chapterId) {
+  return [
+    "Bạn là Translation Preview Agent cho dự án AI-LAB.",
+    "Trước khi làm, hãy đọc:",
+    "1. skills/dataset-translation-preview/SKILL.md",
+    "2. skills/dataset-translation-preview/references/TRANSLATION_PREVIEW_CONTRACT.md",
+    "",
+    "Nguồn đang xử lý:",
+    `- doc_id: ${docId || "<doc_id>"}`,
+    `- chapter_id: ${chapterId || "<chapter_id>"}`,
+    "",
+    "Yêu cầu:",
+    "- Dùng đúng input bundle JSON được export từ web tool.",
+    "- Không dịch ngoài các block có trong bundle.",
+    "- Tuân thủ canonical_target / expected_target / forbidden_variants.",
+    "- Áp dụng address_policy khi discourse speaker/addressee và relation phù hợp.",
+    "- Không tự tạo span/start/end/offset.",
+    "- Không ghi canonical/gold/manual_reference_subset.",
+    "- Output đúng một JSON object theo contract, không bọc markdown code block.",
+    "",
+    "Dán input bundle JSON bên dưới rồi sinh preview JSON để import lại vào web tool."
+  ].join("\n");
+}
+
 function TranslationPreviewView({
   docInfo, chapters = [], allBlocks = [], chapter, selectedId, onSelectBlock, linkIndex
 }) {
@@ -731,6 +788,14 @@ function TranslationPreviewView({
   const [loadingRuns, setLoadingRuns] = React.useState(false);
   const [loadingRun, setLoadingRun] = React.useState(false);
   const [error, setError] = React.useState("");
+  const [inputBundle, setInputBundle] = React.useState(null);
+  const [inputText, setInputText] = React.useState("");
+  const [inputLoading, setInputLoading] = React.useState(false);
+  const [importText, setImportText] = React.useState("");
+  const [importing, setImporting] = React.useState(false);
+  const [loopNotice, setLoopNotice] = React.useState("");
+  const [importWarnings, setImportWarnings] = React.useState([]);
+  const importFileRef = React.useRef(null);
   const docId = docInfo?.doc_id || "";
 
   React.useEffect(() => {
@@ -809,8 +874,91 @@ function TranslationPreviewView({
 
   function changeChapter(chapterId) {
     setSelectedChapterId(chapterId);
+    setInputBundle(null);
+    setInputText("");
+    setLoopNotice("");
+    setImportWarnings([]);
     const first = (allBlocks || []).find(block => block.chapter_id === chapterId);
     if (first) onSelectBlock(first.block_id);
+  }
+
+  async function refreshRuns(selectRunId) {
+    const data = await window.AILAB_API.listTranslationPreviewRuns(docId);
+    setRuns(data.runs || []);
+    if (selectRunId) setSelectedRunId(selectRunId);
+  }
+
+  async function buildInputBundle() {
+    if (!docId || !selectedChapterId) return;
+    setInputLoading(true);
+    setError("");
+    setLoopNotice("");
+    setImportWarnings([]);
+    try {
+      const data = await window.AILAB_API.getTranslationPreviewInput(docId, selectedChapterId);
+      setInputBundle(data);
+      setInputText(prettyJson(data));
+      setLoopNotice("Input bundle built. Copy or download it for the translation preview agent.");
+    } catch (err) {
+      setInputBundle(null);
+      setInputText("");
+      setError(err?.message || "Cannot build translation preview input.");
+    } finally {
+      setInputLoading(false);
+    }
+  }
+
+  async function copyInputJson() {
+    if (!inputText) return;
+    await copyPlainText(inputText);
+    setLoopNotice("Input JSON copied.");
+  }
+
+  async function copyPrompt() {
+    await copyPlainText(translationPreviewPrompt(docId, selectedChapterId));
+    setLoopNotice("Translation preview prompt copied.");
+  }
+
+  function downloadInputJson() {
+    if (!inputBundle) return;
+    downloadJsonFile(`${docId || "doc"}_${selectedChapterId || "chapter"}_translation_input.json`, inputBundle);
+  }
+
+  async function importPreviewRun() {
+    setImporting(true);
+    setError("");
+    setLoopNotice("");
+    setImportWarnings([]);
+    try {
+      const parsed = JSON.parse(importText || "{}");
+      const data = await window.AILAB_API.importTranslationPreviewRun(docId, { preview: parsed });
+      const warnings = data.warnings || [];
+      setImportWarnings(warnings);
+      await refreshRuns(data.run?.run_id);
+      setLoadedRun(data.run || null);
+      setLoopNotice(`Preview run imported: ${data.run?.run_id || "new run"}.`);
+    } catch (err) {
+      if (err instanceof SyntaxError) {
+        setError("Preview JSON is invalid.");
+      } else {
+        setError(err?.message || "Cannot import translation preview run.");
+      }
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  async function loadImportFile(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      setImportText(await file.text());
+      setLoopNotice(`Loaded preview JSON file: ${file.name}.`);
+    } catch (err) {
+      setError(err?.message || "Cannot read preview JSON file.");
+    } finally {
+      event.target.value = "";
+    }
   }
 
   return (
@@ -842,6 +990,68 @@ function TranslationPreviewView({
           <div className="tp-run-meta mono">
             {loadedRun ? `${loadedRun.run_id} · ${loadedRun.skill_version || "unknown skill"}` : loadingRuns || loadingRun ? "loading..." : "no run loaded"}
           </div>
+        </div>
+
+        <div className="tp-loop-panel">
+          <div className="tp-loop-head">
+            <div>
+              <b>Preview loop</b>
+              <span>Build an input bundle, run the skill outside the app, then import the preview JSON here.</span>
+            </div>
+            <div className="tp-loop-actions">
+              <button className="btn" onClick={buildInputBundle} disabled={!selectedChapterId || inputLoading}>
+                <Ic.layers size={13} /> {inputLoading ? "Building..." : "Build input"}
+              </button>
+              <button className="btn" onClick={copyPrompt} disabled={!selectedChapterId}>
+                <Ic.sparkle size={13} /> Copy prompt
+              </button>
+              <button className="btn" onClick={copyInputJson} disabled={!inputText}>
+                <Ic.doc size={13} /> Copy JSON
+              </button>
+              <button className="btn" onClick={downloadInputJson} disabled={!inputBundle}>
+                <Ic.upload size={13} /> Download JSON
+              </button>
+            </div>
+          </div>
+          {inputText && (
+            <textarea
+              className="tp-json-textarea"
+              value={inputText}
+              readOnly
+              aria-label="Translation preview input JSON"
+            />
+          )}
+          <div className="tp-import-box">
+            <textarea
+              className="tp-json-textarea compact"
+              value={importText}
+              onChange={e => setImportText(e.target.value)}
+              placeholder="Paste translation preview output JSON here..."
+              aria-label="Translation preview output JSON"
+            />
+            <div className="tp-import-actions">
+              <button className="btn" onClick={() => importFileRef.current?.click()}>
+                <Ic.upload size={13} /> Load preview file
+              </button>
+              <input
+                ref={importFileRef}
+                type="file"
+                accept="application/json,.json"
+                className="hidden-file"
+                onChange={loadImportFile}
+              />
+              <button className="btn primary" onClick={importPreviewRun} disabled={!importText.trim() || importing}>
+                <Ic.checkCircle size={13} /> {importing ? "Importing..." : "Import preview"}
+              </button>
+            </div>
+          </div>
+          {loopNotice && <div className="tp-loop-note good"><Ic.checkSmall size={12} />{loopNotice}</div>}
+          {importWarnings.length > 0 && (
+            <div className="tp-loop-note warn">
+              <Ic.alert size={12} />
+              <span>{importWarnings.length} warning{importWarnings.length > 1 ? "s" : ""}: {importWarnings.slice(0, 3).map(item => item.code).join(", ")}</span>
+            </div>
+          )}
         </div>
 
         {error && <div className="tp-warning bad"><Ic.xCircle size={13} />{error}</div>}

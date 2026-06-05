@@ -89,6 +89,8 @@
     getAnnotationAgentCandidate: (docId, chapterId) => request(`/projects/${encodeURIComponent(docId)}/annotate/candidate?chapter_id=${encodeURIComponent(chapterId)}`),
     resolveAnnotationCandidate: (docId, payload) => request(`/projects/${encodeURIComponent(docId)}/annotate/resolve`, { method: "POST", body: payload || {} }),
     applyAnnotationCandidate: (docId, payload) => request(`/projects/${encodeURIComponent(docId)}/annotate/apply`, { method: "POST", body: payload || {} }),
+    getTranslationPreviewInput: (docId, chapterId) => request(`/projects/${encodeURIComponent(docId)}/translation-preview/input?chapter_id=${encodeURIComponent(chapterId)}`),
+    importTranslationPreviewRun: (docId, payload) => request(`/projects/${encodeURIComponent(docId)}/translation-preview/runs`, { method: "POST", body: payload || {} }),
     listTranslationPreviewRuns: (docId) => request(`/projects/${encodeURIComponent(docId)}/translation-preview/runs`),
     loadTranslationPreviewRun: (docId, runId) => request(`/projects/${encodeURIComponent(docId)}/translation-preview/runs/${encodeURIComponent(runId)}`),
     getJob: (docId, jobId) => request(`/projects/${encodeURIComponent(docId)}/jobs/${encodeURIComponent(jobId)}`),

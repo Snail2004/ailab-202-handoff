@@ -139,6 +139,115 @@ def _relation_ids(project_path: Path) -> set[str]:
     }
 
 
+def _list_value(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text if text else None
+
+
+def _clean_dict(item: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in item.items() if value is not None}
+
+
+def build_translation_input(project_path: Path, doc_id: str, chapter_id: str) -> dict[str, Any]:
+    document = _read_document(project_path)
+    if document.get("doc_id") != doc_id:
+        raise TranslationPreviewError("doc_id_mismatch", "Project document doc_id does not match request.")
+
+    chapters, blocks = flatten_document(document)
+    chapter_ids = {str(chapter.get("chapter_id")) for chapter in chapters if chapter.get("chapter_id")}
+    if chapter_id not in chapter_ids:
+        raise TranslationPreviewError("missing_chapter", f"Chapter not found: {chapter_id}", 404)
+
+    bundle_blocks: list[dict[str, Any]] = []
+    for block in blocks:
+        if str(block.get("chapter_id")) != chapter_id:
+            continue
+        discourse = block.get("discourse") if isinstance(block.get("discourse"), dict) else {}
+        clean_discourse = _clean_dict({
+            "speaker_entity_id": _optional_text(discourse.get("speaker_entity_id")),
+            "addressee_entity_id": _optional_text(discourse.get("addressee_entity_id")),
+        })
+        item = {
+            "block_id": block.get("block_id"),
+            "block_type": block.get("block_type"),
+            "clean_text": block.get("clean_text") or "",
+        }
+        if clean_discourse:
+            item["discourse"] = clean_discourse
+        bundle_blocks.append(item)
+
+    known_entities = [
+        _clean_dict({
+            "entity_id": row.get("entity_id"),
+            "canonical_source": row.get("canonical_source") or "",
+            "canonical_target": row.get("canonical_target") or "",
+            "aliases_target": _list_value(row.get("aliases_target")),
+            "pronoun_policy": row.get("pronoun_policy") or "",
+        })
+        for row in read_jsonl(_jsonl_path(project_path, "entities"))
+        if row.get("entity_id")
+    ]
+
+    known_terms = [
+        _clean_dict({
+            "term_id": row.get("term_id"),
+            "source_term": row.get("source_term") or "",
+            "expected_target": row.get("expected_target") or "",
+            "allowed_variants": _list_value(row.get("allowed_variants")),
+            "forbidden_variants": _list_value(row.get("forbidden_variants")),
+        })
+        for row in read_jsonl(_jsonl_path(project_path, "glossary"))
+        if row.get("term_id")
+    ]
+
+    known_relations = [
+        {
+            "relation_id": row.get("relation_id"),
+            "source_entity_id": row.get("source_entity_id"),
+            "target_entity_id": row.get("target_entity_id"),
+            "relation_type": row.get("relation_type") or "",
+            "address_policy": row.get("address_policy") if isinstance(row.get("address_policy"), dict) else {},
+            "state_label": row.get("state_label"),
+            "valid_from_block_id": row.get("valid_from_block_id"),
+            "valid_to_block_id": row.get("valid_to_block_id"),
+        }
+        for row in read_jsonl(_jsonl_path(project_path, "entity_relations"))
+        if row.get("relation_id")
+    ]
+
+    chapter_summary: dict[str, Any] = {
+        "summary_source": "",
+        "emotional_tone": "",
+        "motifs": [],
+    }
+    for row in read_jsonl(_jsonl_path(project_path, "chapter_summaries")):
+        if row.get("chapter_id") == chapter_id:
+            chapter_summary = _clean_dict({
+                "summary_source": row.get("summary_source") or "",
+                "emotional_tone": row.get("emotional_tone") or "",
+                "motifs": _list_value(row.get("motifs")),
+                "setting": row.get("setting"),
+                "characters_present": _list_value(row.get("characters_present")),
+            })
+            break
+
+    return {
+        "doc_id": doc_id,
+        "chapter_id": chapter_id,
+        "blocks": bundle_blocks,
+        "known_entities": known_entities,
+        "known_terms": known_terms,
+        "known_relations": known_relations,
+        "chapter_summary": chapter_summary,
+    }
+
+
 def _warning(code: str, message: str, **extra: Any) -> dict[str, Any]:
     item = {"code": code, "message": message}
     item.update(extra)
