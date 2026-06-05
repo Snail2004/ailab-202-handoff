@@ -27,6 +27,6 @@ DATASET_FILES = {
 
 PROJECT_SUBDIRS = ("raw", "canonical", "working", "logs", "exports")
 ALLOWED_SOURCE_EXTENSIONS = {".txt", ".epub"}
-SCHEMA_VERSION = "1.4.0"
+SCHEMA_VERSION = "1.5.0"
 PIPELINE_VERSION = "0.3.3"
 EXTRACTION_TOOL = "ailab-backend-extractor"

@@ -94,6 +94,32 @@ Return exactly one JSON object:
       "confidence": 0.9
     }
   ],
+  "relation_candidates": [
+    {
+      "existing_relation_id": null,
+      "relation_key": "walton_margaret_sibling",
+      "source_ref": "walton",
+      "target_ref": "margaret_saville",
+      "relation_type": "sibling",
+      "suggested_address_policy": {
+        "source_to_target": {"self_term": "anh", "address_term": "em"},
+        "target_to_source": {"self_term": "em", "address_term": "anh"}
+      },
+      "state_label": null,
+      "valid_from_block_id": null,
+      "valid_to_block_id": null,
+      "evidence": [
+        {
+          "block_id": "frankenstein_epub_ch01_b002",
+          "surface": "my dear sister",
+          "left_context": "To Mrs. Saville, ",
+          "right_context": ", England."
+        }
+      ],
+      "reason": "Walton addresses Margaret as his sister; the sibling pair drives Vietnamese address",
+      "confidence": 0.82
+    }
+  ],
   "summary_candidate": {
     "summary_source": "Letter I introduces Walton writing to Margaret Saville from St. Petersburgh about his northern voyage.",
     "characters_present_refs": ["walton", "margaret_saville"],
@@ -123,6 +149,12 @@ Return exactly one JSON object:
 - `surface`: copy exact text from `clean_text`.
 - `left_context` / `right_context`: provide enough local context to distinguish duplicate surfaces. Prefer 5-40 characters on each side.
 - `speaker_ref`, `addressee_ref`, and `characters_present_refs`: reference either an `entity_key` emitted in this JSON or an `existing_entity_id` from input.
+- `source_ref` / `target_ref` (relations): reference an `entity_key` emitted here or an `existing_entity_id` from input. Convention: `source` IS the `relation_type` of `target` (e.g. `relation_type=parent` => source is the parent of target).
+- `existing_relation_id`: set when the candidate matches a known relation; otherwise `null`. `relation_key` is required when `null` (stable lowercase slug).
+- `relation_type`: free-text with recommended values (sibling/parent/child/spouse/friend/master/servant/mentor/stranger/rival/guardian).
+- `suggested_address_policy`: draft Vietnamese address only; each direction is `{self_term, address_term}` (how that side refers to itself / addresses the other). A human reviewer must approve.
+- Emit a relation candidate only with text evidence and only for narratively relevant pairs (prefer person–person); never create a relation for every pair (no N×N). Momentary emotional outbursts are NOT relations — use discourse/tone for those.
+- Relationship change over the story: emit multiple relation candidates for the same pair distinguished by `state_label` (+ optional `valid_from_block_id` / `valid_to_block_id`, which are block ids, never offsets).
 - `suggested_*`: draft translation targets only. A human reviewer must approve them.
 - `confidence`: number from 0 to 1.
 
@@ -152,6 +184,7 @@ The backend apply step should:
 4. Assert `clean_text[start:end] == surface`.
 5. Flag zero-match or multi-match cases for human selection.
 6. Apply discourse and summary only after referenced entities are resolved.
-7. Preserve provenance (`ai_model`, `prompt_id`, `annotated_by`) and keep candidates in review state.
+7. Resolve relations after entities: map `source_ref` / `target_ref` to `entity_id`; resolve `valid_from_block_id` / `valid_to_block_id` to existing blocks; keep `suggested_address_policy` as a draft for human approval; warn on overlapping phase ranges for the same pair. Relation stays in candidate/review state.
+8. Preserve provenance (`ai_model`, `prompt_id`, `annotated_by`) and keep candidates in review state.
 
 If a referenced entity candidate is rejected by review, discourse and summary links pointing to it must be flagged, not silently dropped.

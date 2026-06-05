@@ -2,7 +2,7 @@
 
 This folder defines the canonical data format for the AI-LAB EN->VI long-text dataset. Every dataset source must validate before it can enter a freeze.
 
-Current schema version: `1.4.0` (`document.schema_version` must be `1.4.0`).
+Current schema version: `1.5.0` (`document.schema_version` must be `1.5.0`).
 
 ## Structure
 
@@ -14,6 +14,7 @@ dataset/
     entity.schema.json            # one line of entities.jsonl
     reference_subset.schema.json  # one line of manual_reference_subset.jsonl
     chapter_summary.schema.json   # one line of chapter_summaries.jsonl
+    entity_relation.schema.json   # one line of entity_relations.jsonl
   tools/
     validate.py                   # schema + referential integrity validator
     requirements.txt
@@ -29,6 +30,7 @@ A single dataset source folder looks like:
   entities.jsonl                  # optional
   manual_reference_subset.jsonl   # optional
   chapter_summaries.jsonl         # optional
+  entity_relations.jsonl          # optional
 ```
 
 ## Install
@@ -59,7 +61,8 @@ Exit code: `0` = pass, `1` = validation errors, `2` = setup/path/dependency erro
     "terms": 2,
     "entities": 3,
     "reference": 3,
-    "summaries": 2
+    "summaries": 2,
+    "relations": 1
   },
   "errors": [],
   "warnings": []
@@ -82,6 +85,9 @@ Each error/warning object has `file`, `location`, `message`, `severity`, and bes
    - spans use `[start, end]` with `end > start`;
    - `chapter_summaries.chapter_id` exists in `document.json` and is not duplicated;
    - `chapter_summaries.characters_present[]` -> entity exists;
+   - `entity_relations.source/target_entity_id` -> entity exists;
+   - `entity_relations.valid_from/to_block_id` and `evidence[].block_id` -> block exists;
+   - `relation_id` is unique; warn on overlapping phase ranges for the same directed pair;
    - `doc_id` is consistent across files.
 
 ## Chapter Summary (1.2.0)
@@ -118,7 +124,17 @@ Required per line: `reference_id`, `doc_id`, `block_id`, `source_text`, `referen
 
 Workflow: in-progress drafts live in the working `translation_review_log.csv`; an entry moves into this JSONL only after a second reviewer marks it `reviewed`. AI-assisted output must be human-revised before it can be `reviewed`. Raw AI output is never accepted as a gold reference.
 
-## Block Types (1.4.0)
+## Entity Relations (1.5.0)
+
+`entity_relations.jsonl` is an optional sidecar describing directed relations between two entities, primarily to resolve Vietnamese address/pronoun (how a pair address each other and refer to themselves).
+
+- Required per line: `relation_id`, `doc_id`, `source_entity_id`, `target_entity_id`, `relation_type`.
+- Convention: `source_entity` IS the `relation_type` of `target_entity` (e.g. `relation_type=parent` => source is the parent of target).
+- `address_policy`: `{ source_to_target, target_to_source }`, each `{ self_term, address_term }`.
+- Phased relations (e.g. ally -> enemy): optional `state_label`, `valid_from_block_id`, `valid_to_block_id`, `trigger_event_id`. Absent phase fields = whole document. Ranges compare by document order (`order_index`), not by string.
+- `relation_type` is free-text with recommended values; not a closed enum.
+
+## Block Types (1.5.0)
 
 `block_type` is a logical content/discourse type, not a layout class. The literary set is:
 

@@ -1,7 +1,7 @@
 # AILAB WORKFLOW — Quy trình & phân vai cho nhóm (AIL-202)
 
 > **Phạm vi:** SOP vận hành cho nhóm AI-LAB xây bộ dữ liệu dịch EN→VI văn bản dài & siêu dài (sách/truyện/tiểu thuyết). Nhóm KHÔNG làm hệ agent/app dịch. "Dịch" trong AI-LAB = **reference VI đã kiểm duyệt theo năng lực**: có mức tối thiểu để chứng minh quy trình, sau đó dịch/verify được càng nhiều càng tốt.
-> Chuẩn format: `dataset_spec/schema/` (schema **1.4.0**) + `dataset_spec/tools/validate.py`. Kế hoạch: `AILAB_PLAN.md`.
+> Chuẩn format: `dataset_spec/schema/` (schema **1.5.0**) + `dataset_spec/tools/validate.py`. Kế hoạch: `AILAB_PLAN.md`.
 
 > **Trạng thái công cụ (đã build, 2026-06):** extraction pipeline ở `pipeline_version 0.3.3` (TXT/EPUB; Gutenberg/Standard Ebooks/Global Grey; TOC-driven chapter split, lọc front/back matter, strip boilerplate). Web app (Flask backend + frontend) đã chạy end-to-end: Project/Source screen → extract → review/clean → annotate → validate → export/freeze, có autosave + undo/redo. Đã có sẵn corpus thử trong `ailab_projects/` (xem `app/reports/EXTRACTOR_EVAL_*.md`). **Member làm việc trên web app, không sửa JSON tay.**
 
@@ -25,7 +25,7 @@ metadata mô tả (`title`, `author`, `genre`, `domain`); block (`clean_text`, `
 
 ## 2.1. Field ownership: code / AI draft / human review
 
-Schema 1.4.0 không có nghĩa là một agent phải tự điền tất cả field. Mỗi nhóm field có executor đúng:
+Schema 1.5.0 không có nghĩa là một agent phải tự điền tất cả field. Mỗi nhóm field có executor đúng:
 
 | Field / task | Executor chính | Quy tắc |
 |---|---|---|
@@ -71,7 +71,7 @@ Validator chỉ kiểm cấu trúc/id/span/cross-reference. Validator pass khôn
   - `draft` → sửa qua web → ghi vào **`working/drafts.json`** (source of truth cho draft, không validate).
   - `reviewed` → đã review chéo (đủ `source`) → **mới được promote vào `manual_reference_subset.jsonl`**.
   - `locked` → đã chốt cuối.
-- **Schema 1.4.0:** mỗi dòng reference bắt buộc có `source` (`human`|`ai_assisted_verified`) + `status` (`reviewed`|`locked`). File JSONL **freeze-clean**: không chứa `draft`.
+- **Schema 1.5.0:** mỗi dòng reference bắt buộc có `source` (`human`|`ai_assisted_verified`) + `status` (`reviewed`|`locked`). File JSONL **freeze-clean**: không chứa `draft`.
 
 ### Working store: `working/drafts.json` (+ export `translation_review_log.csv`)
 - **Nguồn thật của draft = `working/drafts.json`** (web/API ghi vào đây). **Không sửa CSV tay làm input.**
@@ -140,4 +140,4 @@ jekyll_txt,jekyll_txt_ch01_b002,Vu Hai,Minh Khang,entity,no,2026-06-10,"A: White
 **Trung thực khi báo cáo:** nếu agreement do reviewer điền *sau khi thấy cả 2 bản* thì gọi là **"disagreement/adjudication log"**, KHÔNG gọi là Cohen's kappa. Muốn IAA chuẩn về sau: vì `block_id` **tất định** (cùng nguồn + cùng `pipeline_version` → cùng block_id), chỉ cần **mỗi annotator giữ project copy riêng** trên phần overlap → sau này chạy diff so 2 bản là ra số chuẩn, **không cần quyết gì thêm bây giờ**.
 
 ---
-*SOP cho nhóm AI-LAB. Schema 1.4.0. Không phải hệ agent/app dịch.*
+*SOP cho nhóm AI-LAB. Schema 1.5.0. Không phải hệ agent/app dịch.*

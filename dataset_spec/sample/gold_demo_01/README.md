@@ -5,7 +5,7 @@ This folder is a **synthetic demo sample** for the AIL-202 dataset spec kit. It 
 Purpose:
 
 - demonstrate the required file layout;
-- provide a small end-to-end example that passes schema version `1.4.0`;
+- provide a small end-to-end example that passes schema version `1.5.0`;
 - give the AI-LAB team a concrete reference for annotation and web-tool development.
 
 ## Files
@@ -17,13 +17,14 @@ gold_demo_01/
   entities.jsonl
   manual_reference_subset.jsonl
   chapter_summaries.jsonl
+  entity_relations.jsonl
   README.md
 ```
 
 ## Field Notes
 
 - `doc_id`: stable source id. Every file in this folder uses `gold_demo_01`.
-- `schema_version`: must be `1.4.0` for `document.json`.
+- `schema_version`: must be `1.5.0` for `document.json`.
 - `chapter_id`: stable chapter id, e.g. `gold_demo_01_ch01`.
 - `block_id`: stable translation/annotation unit id, e.g. `gold_demo_01_ch01_b002`.
 - `source_text`: raw/source-like block text. It is required and must be non-empty.
@@ -34,6 +35,7 @@ gold_demo_01/
 - `annotations.entity_mentions`: array of `entity_id` pointers into `entities.jsonl`.
 - `reference_translation_id`: optional pointer into `manual_reference_subset.jsonl`; the reference must belong to the same `block_id`.
 - `chapter_summaries.jsonl`: optional chapter-level context sidecar. Only `summary_source` and `source` are required per line; richer fields are optional.
+- `entity_relations.jsonl`: optional sidecar for directed character relations and Vietnamese address policy. Each line needs `relation_id`, `doc_id`, `source_entity_id`, `target_entity_id`, `relation_type`; `address_policy` carries the four address terms.
 - `span`: `[start, end]` character offsets into the relevant `clean_text`; `end` is exclusive and must be greater than `start`.
 - `quality_flags`: simple extraction/QC flags. This sample uses `["ok"]`.
 
@@ -54,6 +56,7 @@ gold_demo_01/
 - literary block types: heading, paragraph, and dialogue;
 - dialogue with `speaker_entity_id` and `addressee_entity_id`;
 - entity aliases and `pronoun_policy`;
+- a character relation with `address_policy` (`entity_relations.jsonl`: Clockkeeper <-> Mira);
 - repeated entities for entity consistency checks;
 - glossary terms with `allowed_variants` and `forbidden_variants`;
 - motif, tone, implicit meaning, and narrative notes;
@@ -61,7 +64,7 @@ gold_demo_01/
 - chapter summary sidecar for two chapters;
 - provenance correction example in `gold_demo_01_ch02_b011`.
 
-This sample intentionally does not cover `footnote`; it can be added in later samples if a real literary source needs it. `formula`, `table_cell`, and `list_item` are not part of the 1.4.0 literary block type set.
+This sample intentionally does not cover `footnote`; it can be added in later samples if a real literary source needs it. `formula`, `table_cell`, and `list_item` are not part of the 1.5.0 literary block type set.
 
 ## Correct Example
 

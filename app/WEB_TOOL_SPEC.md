@@ -1,7 +1,7 @@
 # WEB_TOOL_SPEC — AILAB Dataset Tool (AIL-202)
 
 > **Phạm vi:** Đặc tả app **xây dựng dataset** EN→VI văn bản dài. **KHÔNG phải app dịch, KHÔNG phải hệ agent, KHÔNG phải PDF-layout tool.** App đưa nhóm đi từ **file nguồn EN → 5 file dataset JSON/JSONL sạch (validate pass)**.
-> Liên quan: schema **1.4.0** (`dataset/schema/`), `dataset/tools/validate.py`, `WORKFLOW.md`, `DATASET_DESIGN.md`, `AILAB_PLAN.md`.
+> Liên quan: schema **1.5.0** (`dataset/schema/`), `dataset/tools/validate.py`, `WORKFLOW.md`, `DATASET_DESIGN.md`, `AILAB_PLAN.md`.
 > Mô hình: **một app end-to-end duy nhất**, chạy **local**, dữ liệu phối hợp qua **git** (mỗi người 1 `doc_id` một lúc). Một codebase, chia việc theo module.
 
 ---
@@ -334,4 +334,4 @@ Tất cả trên **một repo/folder, một format dữ liệu, một backend**.
 App này **chỉ phục vụ dataset construction**. Extraction là **backend Python deterministic**, không phải browser-extraction, không phải PDF-layout pipeline. Không dịch, không OCR, không layout, không multi-user/auth/DB. Mọi thứ về hệ thống dịch tự động nâng cao hoặc PDF layout là **scope khác**, không đưa vào đây.
 
 ---
-*Spec cho AILAB Dataset Tool. Schema 1.4.0. Một app end-to-end, local + git, không phải app dịch.*
+*Spec cho AILAB Dataset Tool. Schema 1.5.0. Một app end-to-end, local + git, không phải app dịch.*

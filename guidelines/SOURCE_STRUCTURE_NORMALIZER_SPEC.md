@@ -2,7 +2,7 @@
 
 **Mã đề xuất:** `source-structure-normalizer`
 
-**Scope:** AI-LAB / AIL-202 - bước hỗ trợ **trước extractor**, dùng cho cả **TXT và EPUB**. Nhiệm vụ duy nhất là nhận diện đúng **body thật / chương / tiêu đề chương / ranh giới đoạn / front-back matter** của nguồn để extractor build `document.json` đúng cấu trúc. **Không đổi schema `1.4.0`.**
+**Scope:** AI-LAB / AIL-202 - bước hỗ trợ **trước extractor**, dùng cho cả **TXT và EPUB**. Nhiệm vụ duy nhất là nhận diện đúng **body thật / chương / tiêu đề chương / ranh giới đoạn / front-back matter** của nguồn để extractor build `document.json` đúng cấu trúc. **Không đổi dataset schema hiện tại (1.5.0).**
 
 **Pipeline tham chiếu:** `extraction.py` từ `0.3.3` trở lên.
 

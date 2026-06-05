@@ -12,7 +12,7 @@ Annotation phục vụ consistency và chất lượng văn học, không phải
 
 ## Block types
 
-Schema 1.4.0 chỉ dùng 4 loại:
+Schema 1.5.0 chỉ dùng 4 loại:
 
 | Type | Khi dùng |
 |---|---|
@@ -68,6 +68,30 @@ Field quan trọng:
 - `mentions`
 
 Entity không ép mọi mention phải dùng `canonical_target`. Alias, đại từ, hoặc lược chủ ngữ tự nhiên vẫn hợp lệ nếu không sai danh tính.
+
+## Entity relations (quan hệ nhân vật & xưng hô)
+
+Lưu ở sidecar `entity_relations.jsonl` (1.5.0). Mỗi dòng là một **quan hệ có hướng giữa hai entity**, chủ yếu để chọn **xưng hô tiếng Việt** đúng trong lời thoại.
+
+Chỉ tạo relation khi:
+
+- có **evidence** trong văn bản (cách hai nhân vật gọi nhau, mô tả quan hệ);
+- quan hệ ảnh hưởng tới xưng hô/dịch (ưu tiên person–person);
+- KHÔNG tạo quan hệ cho mọi cặp entity (không N×N).
+
+Field quan trọng:
+
+- `source_entity_id`, `target_entity_id` — quy ước: **source LÀ `relation_type` của target** (vd `relation_type=parent` ⇒ source là cha/mẹ của target).
+- `relation_type` — free-text + giá trị gợi ý: `sibling`/`parent`/`child`/`spouse`/`friend`/`master`/`servant`/`mentor`/`stranger`/`rival`/`guardian`…
+- `address_policy` — 4 chuỗi, hai chiều độc lập: `source_to_target: {self_term, address_term}` (source tự xưng gì / gọi target là gì) và `target_to_source: {self_term, address_term}`.
+- `evidence` — `[{block_id, surface}]`, chống bịa.
+- `confidence`, `notes` — optional.
+
+Quan hệ thay đổi theo diễn biến (vd thân→thù): tạo **nhiều dòng cho cùng cặp**, phân biệt bằng `state_label` + `valid_from_block_id` + `valid_to_block_id` (vắng = áp cả tài liệu). So sánh theo thứ tự tài liệu (`order_index`), không so chuỗi `block_id`.
+
+Bùng cảm xúc nhất thời (một câu) KHÔNG tạo relation mới → dùng `discourse.pronoun_hints` + `annotations.tone/narrative_note` ở block đó.
+
+Validator: `source/target_entity_id`, `valid_from/to_block_id`, `evidence[].block_id` phải trỏ tới đối tượng tồn tại; cảnh báo nếu phase chồng lấp cùng cặp.
 
 ## Span
 

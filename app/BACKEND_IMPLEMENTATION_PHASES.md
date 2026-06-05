@@ -689,7 +689,7 @@ Nếu chưa kịp EPUB chuẩn, ưu tiên TXT MVP trước nhưng UI vẫn cho t
 
 Yêu cầu:
 
-- `schema_version = "1.4.0"`.
+- `schema_version = "1.5.0"`.
 - `doc_id` từ project.
 - metadata từ Project/Source form.
 - provenance:

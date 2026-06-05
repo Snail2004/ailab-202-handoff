@@ -98,7 +98,7 @@ AILAB_HANDOFF/
   README.md
 
   dataset_spec/
-    schema/       # JSON Schema 1.4.0
+    schema/       # JSON Schema 1.5.0
     tools/        # validate.py + requirements
     sample/       # golden sample validate pass
     templates/    # working log templates
