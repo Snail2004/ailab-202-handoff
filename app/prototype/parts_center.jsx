@@ -35,6 +35,7 @@ function ModeToggle({ mode, onModeChange }) {
     { id: "block", label: "Block" },
     { id: "chapter", label: "Chapter" },
     { id: "book", label: "Book" },
+    { id: "preview", label: "Preview" },
   ];
   return (
     <div className="mode-toggle" role="group" aria-label="Center view mode">
@@ -57,6 +58,7 @@ function EditorToolbar({
 }) {
   const [typeOpen, setTypeOpen] = React.useState(false);
   const [flagOpen, setFlagOpen] = React.useState(false);
+  const readOnlyPreview = mode === "preview";
   const qualityFlags = block.quality_flags || [];
   const flags = qualityFlags.filter(f => f !== "ok");
   return (
@@ -65,11 +67,11 @@ function EditorToolbar({
         <ModeToggle mode={mode} onModeChange={onModeChange} />
 
         <span className="toolbar-chapter-meta">
-          {mode === "block" ? block.block_id : `${streamLabel} · ${streamCount || 0} blocks`}
+          {readOnlyPreview ? "Translation Preview · read-only" : mode === "block" ? block.block_id : `${streamLabel} · ${streamCount || 0} blocks`}
         </span>
 
         {/* block_type dropdown */}
-        <div className="dd">
+        {!readOnlyPreview && <div className="dd">
           <button className="dd-btn" onClick={() => { setTypeOpen(o => !o); setFlagOpen(false); }}>
             <span className={"tag tag-" + block.block_type}>{block.block_type}</span>
             <Ic.chevDown size={11} className="faint" />
@@ -86,16 +88,16 @@ function EditorToolbar({
               ))}
             </div>
           </>)}
-        </div>
+        </div>}
 
         {/* chapter opening toggle */}
-        <button className={"tog" + (block.is_chapter_opening ? " on" : "")} onClick={onToggleOpening}>
+        {!readOnlyPreview && <button className={"tog" + (block.is_chapter_opening ? " on" : "")} onClick={onToggleOpening}>
           <span className="tog-sw"><span className="tog-knob" /></span>
           <Ic.bolt size={12} />chapter opening
-        </button>
+        </button>}
 
         {/* quality flags */}
-        <div className="dd">
+        {!readOnlyPreview && <div className="dd">
           <button className="dd-btn flags-btn" onClick={() => { setFlagOpen(o => !o); setTypeOpen(false); }}>
             <Ic.flag size={12} className={flags.length ? "flag-on" : "faint"} />
             {flags.length === 0
@@ -118,18 +120,24 @@ function EditorToolbar({
               })}
             </div>
           </>)}
-        </div>
+        </div>}
+
+        {readOnlyPreview && (
+          <span className="mini-badge warn"><Ic.eye size={11} />preview only · not gold</span>
+        )}
       </div>
 
       <div className="ed-tb-right">
-        {mode !== "block" && (
+        {readOnlyPreview ? (
+          <span className="preview-toolbar-note"><Ic.lock size={12} />No save, review, export, or promote actions in this view.</span>
+        ) : mode !== "block" && (
           <button className="btn sm" onClick={onNextUnreviewed}>
             <Ic.arrowRight size={13} />Next unreviewed
           </button>
         )}
-        <button className={"btn sm reviewed-btn" + (reviewed ? " is-on" : "")} onClick={onMarkReviewed}>
+        {!readOnlyPreview && <button className={"btn sm reviewed-btn" + (reviewed ? " is-on" : "")} onClick={onMarkReviewed}>
           <Ic.checkCircle size={13} />{reviewed ? "Reviewed" : "Mark reviewed"}
-        </button>
+        </button>}
       </div>
     </div>
   );
@@ -599,6 +607,233 @@ function ChapterStream({
   );
 }
 
+function previewRunLabel(run) {
+  if (!run) return "preview run";
+  const model = run.model ? ` · ${run.model}` : "";
+  const warnings = run.warning_count ? ` · ${run.warning_count} warn` : "";
+  return `${run.run_id || "run"} · ${run.block_count || 0} blocks${model}${warnings}`;
+}
+
+function contextChip(id, linkIndex) {
+  const value = String(id || "");
+  const entity = linkIndex?.entities?.[value]?.item;
+  if (entity) return { kind: "entity", label: entity.canonical_source || value, title: value };
+  const term = linkIndex?.glossary?.[value]?.item;
+  if (term) return { kind: "term", label: term.source_term || value, title: value };
+  const chapter = linkIndex?.chapterById?.[value];
+  if (chapter) return { kind: "chapter", label: chapter.title || chapter.chapter_title || value, title: value };
+  if (value.toLowerCase().startsWith("rel")) return { kind: "relation", label: value, title: value };
+  return { kind: "unknown", label: value, title: value };
+}
+
+function addressSummary(address) {
+  if (!address) return null;
+  const selfTerm = address.self_term || address.self || "";
+  const addressTerm = address.address_term || address.address || "";
+  const pair = address.pair || "";
+  const relationId = address.relation_id || "";
+  const terms = [selfTerm, addressTerm].filter(Boolean).join(" / ");
+  return {
+    text: terms || pair || relationId || "address applied",
+    sub: [pair, relationId].filter(Boolean).join(" · "),
+  };
+}
+
+function TranslationPreviewView({
+  docInfo, chapters = [], allBlocks = [], chapter, selectedId, onSelectBlock, linkIndex
+}) {
+  const [runs, setRuns] = React.useState([]);
+  const [selectedChapterId, setSelectedChapterId] = React.useState(chapter?.chapter_id || chapters[0]?.chapter_id || "");
+  const [selectedRunId, setSelectedRunId] = React.useState("");
+  const [loadedRun, setLoadedRun] = React.useState(null);
+  const [loadingRuns, setLoadingRuns] = React.useState(false);
+  const [loadingRun, setLoadingRun] = React.useState(false);
+  const [error, setError] = React.useState("");
+  const docId = docInfo?.doc_id || "";
+
+  React.useEffect(() => {
+    const next = chapter?.chapter_id || chapters[0]?.chapter_id || "";
+    setSelectedChapterId(next);
+  }, [chapter?.chapter_id, chapters.length]);
+
+  React.useEffect(() => {
+    let alive = true;
+    if (!docId) return;
+    setLoadingRuns(true);
+    setError("");
+    setLoadedRun(null);
+    window.AILAB_API.listTranslationPreviewRuns(docId)
+      .then(data => {
+        if (!alive) return;
+        setRuns(data.runs || []);
+      })
+      .catch(err => {
+        if (!alive) return;
+        setRuns([]);
+        setError(err?.message || "Cannot load translation preview runs.");
+      })
+      .finally(() => alive && setLoadingRuns(false));
+    return () => { alive = false; };
+  }, [docId]);
+
+  const chapterRuns = React.useMemo(
+    () => (runs || []).filter(run => run.chapter_id === selectedChapterId),
+    [runs, selectedChapterId]
+  );
+
+  React.useEffect(() => {
+    if (!chapterRuns.length) {
+      setSelectedRunId("");
+      setLoadedRun(null);
+      return;
+    }
+    if (!chapterRuns.some(run => run.run_id === selectedRunId)) {
+      setSelectedRunId(chapterRuns[chapterRuns.length - 1].run_id);
+    }
+  }, [chapterRuns, selectedRunId]);
+
+  React.useEffect(() => {
+    let alive = true;
+    if (!docId || !selectedRunId) return;
+    setLoadingRun(true);
+    setError("");
+    window.AILAB_API.loadTranslationPreviewRun(docId, selectedRunId)
+      .then(data => {
+        if (!alive) return;
+        setLoadedRun(data.run || null);
+      })
+      .catch(err => {
+        if (!alive) return;
+        setLoadedRun(null);
+        setError(err?.message || "Cannot load translation preview run.");
+      })
+      .finally(() => alive && setLoadingRun(false));
+    return () => { alive = false; };
+  }, [docId, selectedRunId]);
+
+  const chapterRows = React.useMemo(
+    () => (allBlocks || []).filter(block => block.chapter_id === selectedChapterId),
+    [allBlocks, selectedChapterId]
+  );
+
+  const runByBlock = React.useMemo(() => {
+    const map = {};
+    (loadedRun?.blocks || []).forEach(row => { if (row.block_id) map[row.block_id] = row; });
+    return map;
+  }, [loadedRun]);
+
+  const currentChapter = chapters.find(ch => ch.chapter_id === selectedChapterId) || {};
+  const warnings = loadedRun?.warnings || [];
+
+  function changeChapter(chapterId) {
+    setSelectedChapterId(chapterId);
+    const first = (allBlocks || []).find(block => block.chapter_id === chapterId);
+    if (first) onSelectBlock(first.block_id);
+  }
+
+  return (
+    <div className="ed-scroll">
+      <div className="translation-preview">
+        <div className="tp-banner">
+          <div className="tp-banner-title"><Ic.shield size={14} />Translation Preview</div>
+          <div className="tp-banner-copy">Read-only preview. This is not gold data and cannot be saved, promoted, locked, or frozen from this view.</div>
+        </div>
+
+        <div className="tp-controls">
+          <label className="tp-control">
+            <span>Chapter</span>
+            <select value={selectedChapterId} onChange={e => changeChapter(e.target.value)}>
+              {chapters.map(ch => (
+                <option key={ch.chapter_id} value={ch.chapter_id}>
+                  {ch.title || ch.chapter_title || ch.chapter_id}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="tp-control wide">
+            <span>Preview run</span>
+            <select value={selectedRunId} onChange={e => setSelectedRunId(e.target.value)} disabled={!chapterRuns.length || loadingRuns}>
+              {!chapterRuns.length && <option value="">No preview run for this chapter</option>}
+              {chapterRuns.map(run => <option key={run.run_id} value={run.run_id}>{previewRunLabel(run)}</option>)}
+            </select>
+          </label>
+          <div className="tp-run-meta mono">
+            {loadedRun ? `${loadedRun.run_id} · ${loadedRun.skill_version || "unknown skill"}` : loadingRuns || loadingRun ? "loading..." : "no run loaded"}
+          </div>
+        </div>
+
+        {error && <div className="tp-warning bad"><Ic.xCircle size={13} />{error}</div>}
+        {warnings.length > 0 && (
+          <div className="tp-warning">
+            <Ic.alert size={13} />
+            <div>
+              <b>{warnings.length} import warning{warnings.length > 1 ? "s" : ""}</b>
+              <div className="tp-warning-list">
+                {warnings.slice(0, 4).map((warning, index) => (
+                  <span key={index}>{warning.code}: {warning.context_id || warning.relation_id || warning.block_id || warning.message}</span>
+                ))}
+                {warnings.length > 4 && <span>+{warnings.length - 4} more</span>}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {!loadingRuns && !chapterRuns.length ? (
+          <div className="tp-empty">
+            <Ic.file size={22} />
+            <div>No translation preview run for {currentChapter.title || selectedChapterId || "this chapter"}.</div>
+            <p>Import a JSON run through the S2 API, then reload this view.</p>
+          </div>
+        ) : (
+          <div className="tp-table">
+            <div className="tp-table-head">
+              <span>Source EN</span>
+              <span>Preview VI</span>
+            </div>
+            {chapterRows.map(block => {
+              const preview = runByBlock[block.block_id] || null;
+              const address = addressSummary(preview?.address_applied);
+              const usedContext = preview?.used_context || [];
+              return (
+                <article
+                  key={block.block_id}
+                  className={"tp-row" + (selectedId === block.block_id ? " active" : "")}
+                  data-block-id={block.block_id}
+                  onMouseDown={() => onSelectBlock(block.block_id)}
+                >
+                  <div className="tp-cell tp-source">
+                    <div className="tp-block-meta">
+                      <span className="mono">{block.block_id}</span>
+                      <span className={"tag tag-" + block.block_type}>{block.block_type}</span>
+                    </div>
+                    <div className="tp-text">{block.clean_text || ""}</div>
+                  </div>
+                  <div className={"tp-cell tp-target" + (!preview?.target_text ? " missing" : "")}>
+                    <div className="tp-target-head">
+                      <span className="mono">{preview ? "matched by block_id" : "missing preview"}</span>
+                      {address && <span className="tp-address"><Ic.users size={12} />{address.text}{address.sub ? <em>{address.sub}</em> : null}</span>}
+                    </div>
+                    <div className="tp-text">{preview?.target_text || "(not translated in this run)"}</div>
+                    {(usedContext.length > 0 || preview?.notes) && (
+                      <div className="tp-context">
+                        {usedContext.map((id, idx) => {
+                          const chip = contextChip(id, linkIndex);
+                          return <span key={`${id}:${idx}`} className={"tp-chip " + chip.kind} title={chip.title}>{chip.label}</span>;
+                        })}
+                        {preview?.notes && <span className="tp-note">{preview.notes}</span>}
+                      </div>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function CenterEditor({
   block, docInfo, reviewed, spans, editing, mode, onModeChange, chapter, chapters, chapterBlocks, allBlocks,
   review, selectedId, getSpansForBlock, linkIndex, onSelectBlock, onNextUnreviewed,
@@ -623,7 +858,17 @@ function CenterEditor({
         onChangeType={onChangeType} onToggleOpening={onToggleOpening}
         onToggleFlag={onToggleFlag} onMarkReviewed={() => onMarkReviewed(block.block_id)} />
 
-      {mode !== "block" ? (
+      {mode === "preview" ? (
+        <TranslationPreviewView
+          docInfo={docInfo}
+          chapters={chapters}
+          allBlocks={allBlocks}
+          chapter={chapter}
+          selectedId={selectedId}
+          onSelectBlock={onSelectBlock}
+          linkIndex={linkIndex}
+        />
+      ) : mode !== "block" ? (
         <ChapterStream
           blocks={streamBlocks}
           chapters={chapters}

@@ -155,9 +155,10 @@ function joinLocalPath(root, ...parts) {
   return [root.replace(/[\\/]+$/, ""), ...parts].filter(Boolean).join(sep);
 }
 
-function TopBar({ docId, dirty, lastSaved, onValidate, onExport, onFreeze, onUndo, onRedo, history, freezeReady, freezeReasons }) {
-  const canUndo = !!history?.can_undo && !dirty;
-  const canRedo = !!history?.can_redo && !dirty;
+function TopBar({ docId, dirty, lastSaved, onValidate, onExport, onFreeze, onUndo, onRedo, history, freezeReady, freezeReasons, previewReadOnly }) {
+  const canUndo = !!history?.can_undo && !dirty && !previewReadOnly;
+  const canRedo = !!history?.can_redo && !dirty && !previewReadOnly;
+  const readOnlyTip = "Disabled in Translation Preview read-only view.";
   return (
     <div className="topbar">
       <div className="tb-left">
@@ -177,23 +178,47 @@ function TopBar({ docId, dirty, lastSaved, onValidate, onExport, onFreeze, onUnd
         </span>
         <span className="tb-sep" />
         <div className="undo-group">
-          <button className="btn icon-only tip" disabled={!canUndo} data-tip={dirty ? "Wait for current save to finish" : historyTip("Undo", history?.undo_top)} onClick={onUndo} aria-label="Undo">
+          <button className="btn icon-only tip" disabled={!canUndo} data-tip={previewReadOnly ? readOnlyTip : dirty ? "Wait for current save to finish" : historyTip("Undo", history?.undo_top)} onClick={onUndo} aria-label="Undo">
             <Ic.undo size={13} />
           </button>
-          <button className="btn icon-only tip" disabled={!canRedo} data-tip={dirty ? "Wait for current save to finish" : historyTip("Redo", history?.redo_top)} onClick={onRedo} aria-label="Redo">
+          <button className="btn icon-only tip" disabled={!canRedo} data-tip={previewReadOnly ? readOnlyTip : dirty ? "Wait for current save to finish" : historyTip("Redo", history?.redo_top)} onClick={onRedo} aria-label="Redo">
             <Ic.redo size={13} />
           </button>
         </div>
         <span className="tb-sep" />
         <span className="user-chip tip" data-tip="Current local user"><span className="ua">M</span>{currentUser()}</span>
         <span className="tb-sep" />
-        <button className="btn" onClick={onValidate}><Ic.checkCircle size={13} />Validate</button>
-        <button className="btn" onClick={onExport}><Ic.upload size={13} />Export</button>
-        <div className="tip tip-left" data-tip={freezeReady ? "Create a versioned snapshot after validation and review gates pass" : "Blocked: " + freezeReasons.join(" · ")}>
-          <button className="btn primary" disabled={!freezeReady} onClick={onFreeze}>
+        {previewReadOnly && <span className="preview-top-badge"><Ic.eye size={12} />preview read-only</span>}
+        <button className="btn" disabled={previewReadOnly} data-tip={previewReadOnly ? readOnlyTip : ""} onClick={onValidate}><Ic.checkCircle size={13} />Validate</button>
+        <button className="btn" disabled={previewReadOnly} data-tip={previewReadOnly ? readOnlyTip : ""} onClick={onExport}><Ic.upload size={13} />Export</button>
+        <div className="tip tip-left" data-tip={previewReadOnly ? readOnlyTip : freezeReady ? "Create a versioned snapshot after validation and review gates pass" : "Blocked: " + freezeReasons.join(" · ")}>
+          <button className="btn primary" disabled={previewReadOnly || !freezeReady} onClick={onFreeze}>
             <Ic.snow size={13} />Freeze
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function PreviewRightPanel({ docInfo, block }) {
+  return (
+    <div className="col col-right preview-info-panel">
+      <div className="preview-info-head">
+        <Ic.eye size={15} />
+        <div>
+          <b>Translation Preview</b>
+          <span>read-only · not gold</span>
+        </div>
+      </div>
+      <div className="preview-info-card">
+        <p>This view only compares source blocks with a stored preview run.</p>
+        <p>No annotation, reference, export, freeze, or review action is available here.</p>
+      </div>
+      <div className="preview-info-list">
+        <div><span>doc_id</span><b className="mono">{docInfo?.doc_id || ""}</b></div>
+        <div><span>active block</span><b className="mono">{block?.block_id || ""}</b></div>
+        <div><span>storage</span><b className="mono">working/translation_preview</b></div>
       </div>
     </div>
   );
@@ -236,7 +261,7 @@ function App() {
   const [editing, setEditing] = useState(false);
   const [centerMode, setCenterModeState] = useState(() => {
     const saved = localStorage.getItem(STORAGE_CENTER_MODE);
-    return ["block", "chapter", "book"].includes(saved) ? saved : "chapter";
+    return ["block", "chapter", "book", "preview"].includes(saved) ? saved : "chapter";
   });
   const [toasts, setToasts] = useState([]);
   const [modal, setModal] = useState(null);
@@ -1243,7 +1268,7 @@ function App() {
       <TopBar docId={docInfo.doc_id} dirty={dirty} lastSaved={lastSaved}
         onValidate={runValidate} onExport={doExport} onFreeze={doFreeze}
         onUndo={runUndo} onRedo={runRedo} history={historyState}
-        freezeReady={freezeReady} freezeReasons={freezeReasons} />
+        freezeReady={freezeReady} freezeReasons={freezeReasons} previewReadOnly={centerMode === "preview"} />
       <div className="workspace">
         <LeftSidebar docInfo={docInfo} projects={projects} blocks={visibleBlocks} chapters={chapters} review={review}
           annoSet={annoSet} selectedId={selectedId} onSelect={selectBlock}
@@ -1258,13 +1283,17 @@ function App() {
           onEdit={() => setEditing(true)} onCommitClean={commitClean} onCancelEdit={() => setEditing(false)}
           onChangeType={changeType} onToggleOpening={() => toggleOpening(selectedId)} onToggleFlag={(flag) => toggleFlag(flag, selectedId)} onMarkReviewed={markReviewed}
           onAddGlossary={addGlossary} onAddEntity={addEntity} />
-        <RightPanel openTabs={rightOpenTabs} onToggleTab={toggleRightTab} counts={rpCounts}
-          ctx={{ docInfo, terms: blockTerms, entities: blockEntities, allEntities: entities, block, summary, references, errors, stats, freezeReasons,
-            schemaMigrating, onMigrateSchema: migrateSchema,
-            onDeleteTerm: deleteTerm, onDeleteEntity: deleteEntity, onUpdateTerm: updateTerm, onUpdateEntity: updateEntity, onUpdateSummary: updateSummary,
-            onUpdateBlockNotes: updateBlockNotes,
-            onUpdateReference: updateReference, onCreateReference: createReferenceDraft, onSaveDraft: saveDraft, onMarkReviewedReference: markReviewedReference,
-            onLockReference: lockReference, onUpdateDiscourse: updateDiscourse, onJump: jumpTo, history: historyState }} />
+        {centerMode === "preview" ? (
+          <PreviewRightPanel docInfo={docInfo} block={block} />
+        ) : (
+          <RightPanel openTabs={rightOpenTabs} onToggleTab={toggleRightTab} counts={rpCounts}
+            ctx={{ docInfo, terms: blockTerms, entities: blockEntities, allEntities: entities, block, summary, references, errors, stats, freezeReasons,
+              schemaMigrating, onMigrateSchema: migrateSchema,
+              onDeleteTerm: deleteTerm, onDeleteEntity: deleteEntity, onUpdateTerm: updateTerm, onUpdateEntity: updateEntity, onUpdateSummary: updateSummary,
+              onUpdateBlockNotes: updateBlockNotes,
+              onUpdateReference: updateReference, onCreateReference: createReferenceDraft, onSaveDraft: saveDraft, onMarkReviewedReference: markReviewedReference,
+              onLockReference: lockReference, onUpdateDiscourse: updateDiscourse, onJump: jumpTo, history: historyState }} />
+        )}
       </div>
 
       <Toasts items={toasts} onDismiss={dismiss} />
