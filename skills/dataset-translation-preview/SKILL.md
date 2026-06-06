@@ -43,3 +43,5 @@ Before drafting, read:
 ## Output
 
 Return only the preview JSON object. Do not wrap it in Markdown. Do not add prose before or after the JSON.
+
+Always read the input file and (if you write one) the output file as **UTF-8 without BOM**. Never use the OS default encoding / ANSI / cp1252 — on Windows that replaces every Vietnamese diacritic with `?` and destroys the text. In Python use `open(path, encoding="utf-8")` to read and `open(path, "w", encoding="utf-8")` to write; never use PowerShell `Out-File`/`Set-Content` without `-Encoding utf8`. After writing, confirm the file still contains real Vietnamese letters (e.g. `ông`, `ngài`), not `?`.

@@ -15,6 +15,19 @@ from services.history import record_history
 
 
 ANNOTATION_PROMPT_ID = "dataset-annotation-drafter-v1"
+ENTITY_TYPE_ALIASES = {
+    "character": "person",
+    "location": "place",
+    "organisation": "org",
+    "organization": "org",
+    "named_object": "concept",
+    "object": "concept",
+    "artifact": "concept",
+    "artefact": "concept",
+    "product": "concept",
+    "term": "concept",
+}
+ENTITY_TYPES = {"person", "place", "org", "concept"}
 
 
 class AnnotationError(ValueError):
@@ -98,6 +111,12 @@ def _block_text_hash(blocks: list[dict[str, Any]]) -> str:
 
 def _norm(value: Any) -> str:
     return str(value or "").casefold().strip()
+
+
+def _entity_type(value: Any) -> str:
+    raw = str(value or "concept").strip().casefold()
+    normalized = ENTITY_TYPE_ALIASES.get(raw, raw)
+    return normalized if normalized in ENTITY_TYPES else "concept"
 
 
 def _aliases(row: dict[str, Any]) -> set[str]:
@@ -360,7 +379,7 @@ def _resolve_entity_candidate(
         "doc_id": doc_id,
         "canonical_source": row.get("canonical_source") or row.get("suggested_canonical_source") or row.get("canonical_target") or key,
         "canonical_target": row.get("canonical_target") or row.get("suggested_canonical_target") or row.get("canonical_source") or key,
-        "entity_type": row.get("entity_type") or "concept",
+        "entity_type": _entity_type(row.get("entity_type")),
         "gender": row.get("gender", None),
         "aliases_source": row.get("aliases_source", []),
         "aliases_target": row.get("aliases_target", []),
@@ -508,11 +527,40 @@ def _resolve_relation_candidate(
     if not evidence:
         messages.append("At least one evidence block is required.")
 
+    # Guard against silent duplicate relations: if the agent did not target an
+    # existing relation via existing_relation_id, but the same directed pair +
+    # phase signature already exists, flag it so the candidate lands as
+    # needs_review (which _accepted() refuses to apply) instead of creating a
+    # duplicate edge. The human can add existing_relation_id to update the
+    # existing relation, or change the phase to keep them genuinely separate.
+    duplicate_of = None
+    if matched_existing is None and source_id and target_id:
+        phase_sig = (state_label, valid_from, valid_to)
+        for existing in existing_relations:
+            if (
+                existing.get("source_entity_id") == source_id
+                and existing.get("target_entity_id") == target_id
+                and (
+                    existing.get("state_label") or None,
+                    existing.get("valid_from_block_id") or None,
+                    existing.get("valid_to_block_id") or None,
+                ) == phase_sig
+            ):
+                duplicate_of = existing.get("relation_id")
+                break
+        if duplicate_of:
+            messages.append(
+                f"Possible duplicate of existing relation {duplicate_of} "
+                f"(same source/target/phase). Set existing_relation_id=\"{duplicate_of}\" "
+                "to update it, or change the phase (state_label/valid_from/valid_to) to keep it separate."
+            )
+
     relation_id = existing_id if matched_existing else next_relation_id
     return {
         "status": "ok" if not messages else "needs_review",
         "relation_id": relation_id,
         "existing_relation_id": existing_id or None,
+        "duplicate_of": duplicate_of,
         "is_new": matched_existing is None,
         "relation_key": row.get("relation_key"),
         "doc_id": doc_id,
@@ -807,7 +855,7 @@ def _apply_resolved(
                 "doc_id": doc_id,
                 "canonical_source": item.get("canonical_source") or item.get("entity_key"),
                 "canonical_target": item.get("canonical_target") or item.get("canonical_source") or item.get("entity_key"),
-                "entity_type": item.get("entity_type") or "concept",
+                "entity_type": _entity_type(item.get("entity_type")),
                 "gender": item.get("gender", None),
                 "aliases_source": item.get("aliases_source", []),
                 "aliases_target": item.get("aliases_target", []),

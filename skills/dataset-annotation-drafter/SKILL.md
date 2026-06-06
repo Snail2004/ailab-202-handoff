@@ -39,6 +39,7 @@ Before drafting candidates, read:
 - Do not dual-tag the same surface as both entity and glossary.
 - Do not put places, organizations, concepts, or terms into `characters_present_refs`; use person entities only.
 - Relation candidates: `source` IS the `relation_type` of `target`; emit only with evidence and only for narratively relevant pairs; `suggested_address_policy` (xưng/gọi) is a draft for human approval; for relationships that change over the story emit separate candidates with `state_label`; momentary outbursts are NOT relations (use discourse/tone).
+- Never re-create a relation that already exists. Before emitting a relation, scan `known_relations` for the same directed pair (`source_entity_id` → `target_entity_id`): if it is already there with the same phase, set `existing_relation_id` to that `relation_id` (only add evidence or refine the policy) instead of emitting a new candidate. Emit a brand-new relation ONLY for a genuinely new pair, or for the same pair in a genuinely new phase (different `state_label`). The apply step rejects same-pair/same-phase relations that omit `existing_relation_id`, so duplicates waste a review cycle.
 - Do not tag ordinary pronouns, stylistic adjectives/adverbs, or one-off decorative phrases unless they are narratively important and explicitly justified.
 - Do not rewrite, paraphrase, translate, or annotate reference translations.
 - Raw AI output is never gold; all candidates require validation and human review.

@@ -46,8 +46,26 @@ def _runs_dir(project_path: Path) -> Path:
     return _preview_dir(project_path) / "runs"
 
 
+def _input_dir(project_path: Path) -> Path:
+    return _preview_dir(project_path) / "input"
+
+
+def _agent_outputs_dir(project_path: Path) -> Path:
+    return _preview_dir(project_path) / "agent_outputs"
+
+
 def _index_path(project_path: Path) -> Path:
     return _preview_dir(project_path) / "index.json"
+
+
+def _input_path(project_path: Path, chapter_id: str) -> Path:
+    safe = _safe_id(chapter_id) or "chapter"
+    return _input_dir(project_path) / f"{safe}_input.json"
+
+
+def _agent_output_path(project_path: Path, chapter_id: str) -> Path:
+    safe = _safe_id(chapter_id) or "chapter"
+    return _agent_outputs_dir(project_path) / f"{safe}_preview.json"
 
 
 def _run_path(project_path: Path, run_id: str) -> Path:
@@ -154,7 +172,17 @@ def _clean_dict(item: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in item.items() if value is not None}
 
 
+def translation_input_paths(project_path: Path, chapter_id: str) -> dict[str, str]:
+    return {
+        "project_root": str(project_path.resolve()),
+        "input": str(_input_path(project_path, chapter_id).resolve()),
+        "preview_output_suggested": str(_agent_output_path(project_path, chapter_id).resolve()),
+        "runs_dir": str(_runs_dir(project_path).resolve()),
+    }
+
+
 def build_translation_input(project_path: Path, doc_id: str, chapter_id: str) -> dict[str, Any]:
+    ensure_working_files(project_path)
     document = _read_document(project_path)
     if document.get("doc_id") != doc_id:
         raise TranslationPreviewError("doc_id_mismatch", "Project document doc_id does not match request.")
@@ -242,7 +270,7 @@ def build_translation_input(project_path: Path, doc_id: str, chapter_id: str) ->
             })
             break
 
-    return {
+    payload = {
         "doc_id": doc_id,
         "chapter_id": chapter_id,
         "blocks": bundle_blocks,
@@ -250,7 +278,42 @@ def build_translation_input(project_path: Path, doc_id: str, chapter_id: str) ->
         "known_terms": known_terms,
         "known_relations": known_relations,
         "chapter_summary": chapter_summary,
+        "paths": translation_input_paths(project_path, chapter_id),
     }
+    _input_dir(project_path).mkdir(parents=True, exist_ok=True)
+    _agent_outputs_dir(project_path).mkdir(parents=True, exist_ok=True)
+    write_json_atomic(_input_path(project_path, chapter_id), payload)
+    return payload
+
+
+def load_translation_input(project_path: Path, doc_id: str, chapter_id: str) -> dict[str, Any]:
+    document = _read_document(project_path)
+    if document.get("doc_id") != doc_id:
+        raise TranslationPreviewError("doc_id_mismatch", "Project document doc_id does not match request.")
+
+    chapters, _blocks = flatten_document(document)
+    chapter_ids = {str(chapter.get("chapter_id")) for chapter in chapters if chapter.get("chapter_id")}
+    if chapter_id not in chapter_ids:
+        raise TranslationPreviewError("missing_chapter", f"Chapter not found: {chapter_id}", 404)
+
+    path = _input_path(project_path, chapter_id)
+    if not path.exists():
+        raise TranslationPreviewError(
+            "missing_translation_preview_input",
+            f"No saved translation preview input found for {chapter_id}. Build input first.",
+            404,
+            path=str(path.resolve()),
+        )
+    payload = read_json(path)
+    if payload.get("doc_id") != doc_id or payload.get("chapter_id") != chapter_id:
+        raise TranslationPreviewError(
+            "stale_translation_preview_input",
+            "Saved translation preview input does not match the current project/chapter. Rebuild input.",
+            409,
+            path=str(path.resolve()),
+        )
+    payload["paths"] = {**translation_input_paths(project_path, chapter_id), **(payload.get("paths") or {})}
+    return payload
 
 
 def _warning(code: str, message: str, **extra: Any) -> dict[str, Any]:
@@ -399,6 +462,26 @@ def import_translation_preview(project_path: Path, doc_id: str, preview: dict[st
             "index": str(_index_path(project_path).resolve()),
         },
     }
+
+
+def import_agent_translation_preview(project_path: Path, doc_id: str, chapter_id: str) -> dict[str, Any]:
+    path = _agent_output_path(project_path, chapter_id)
+    if not path.exists():
+        raise TranslationPreviewError(
+            "missing_agent_translation_preview",
+            f"No agent preview output found for {chapter_id}.",
+            404,
+            path=str(path.resolve()),
+        )
+    preview = read_json(path)
+    if not isinstance(preview, dict):
+        raise TranslationPreviewError("invalid_agent_translation_preview", "Agent preview output must be one JSON object.", 400, path=str(path.resolve()))
+    result = import_translation_preview(project_path, doc_id, preview)
+    result["paths"] = {
+        **result.get("paths", {}),
+        "agent_output": str(path.resolve()),
+    }
+    return result
 
 
 def list_translation_previews(project_path: Path) -> dict[str, Any]:

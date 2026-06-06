@@ -363,7 +363,8 @@ function RelationsTab({ relations, entities, block, onCreateRelation, onUpdateRe
   const safeRelations = relations || [];
   const entityMap = {};
   (entities || []).forEach(entity => { entityMap[entity.entity_id] = entity; });
-  const [expanded, setExpanded] = React.useState(safeRelations[0]?.relation_id);
+  const [expanded, setExpanded] = React.useState(null);
+  const [showAdd, setShowAdd] = React.useState(!safeRelations.length);
   const [draft, setDraft] = React.useState(() => defaultRelationDraft(entities || [], block));
   React.useEffect(() => {
     setDraft(current => {
@@ -372,10 +373,13 @@ function RelationsTab({ relations, entities, block, onCreateRelation, onUpdateRe
     });
   }, [entities, block?.block_id]);
   React.useEffect(() => {
-    if (safeRelations.length && !safeRelations.some(r => r.relation_id === expanded)) {
-      setExpanded(safeRelations[0].relation_id);
+    if (expanded && !safeRelations.some(r => r.relation_id === expanded)) {
+      setExpanded(null);
     }
   }, [safeRelations, expanded]);
+  React.useEffect(() => {
+    if (!safeRelations.length) setShowAdd(true);
+  }, [safeRelations.length]);
 
   const speakerId = block?.discourse?.speaker_entity_id || "";
   const addresseeId = block?.discourse?.addressee_entity_id || "";
@@ -386,29 +390,8 @@ function RelationsTab({ relations, entities, block, onCreateRelation, onUpdateRe
         <Ic.users size={12} />
         <span><b>Document-level.</b> Relations connect two entities for Vietnamese address policy. They are not limited to the current block.</span>
       </div>
-      <div className="card open">
-        <div className="card-head static">
-          <span className="card-title">Add relation</span>
-          <span className="card-spacer" />
-          <span className="pill pill-grey">{(entities || []).length} entities</span>
-        </div>
-        {(entities || []).length < 2 ? (
-          <div className="card-body">
-            <Empty icon={Ic.users} text="Need at least two entities." sub="Create entity mentions first, then add their relation here." />
-          </div>
-        ) : (
-          <div className="card-body">
-            <RelationEditor relation={draft} entities={entities} block={block} isNew
-              onChange={setDraft}
-              onSave={async () => {
-                const result = await onCreateRelation(draft);
-                if (result) setDraft(defaultRelationDraft(entities || [], block));
-              }} />
-          </div>
-        )}
-      </div>
 
-      {!safeRelations.length && <Empty icon={Ic.users} text="No entity relations in this document yet." sub="Use Add relation above or apply an annotation drafter candidate." />}
+      {!safeRelations.length && <Empty icon={Ic.users} text="No entity relations in this document yet." sub="Use Add relation below or apply an annotation drafter candidate." />}
 
       {safeRelations.map(relation => {
         const open = expanded === relation.relation_id;
@@ -487,6 +470,32 @@ function RelationsTab({ relations, entities, block, onCreateRelation, onUpdateRe
           </div>
         );
       })}
+
+      <div className={"card" + (showAdd ? " open" : "")}>
+        <button className="card-head" onClick={() => setShowAdd(value => !value)}>
+          <Ic.chevRight size={11} className="card-caret" style={{ transform: showAdd ? "rotate(90deg)" : "none" }} />
+          <span className="card-title">Add relation</span>
+          <span className="card-spacer" />
+          <span className="pill pill-grey">{(entities || []).length} entities</span>
+        </button>
+        {showAdd && ((entities || []).length < 2 ? (
+          <div className="card-body">
+            <Empty icon={Ic.users} text="Need at least two entities." sub="Create entity mentions first, then add their relation here." />
+          </div>
+        ) : (
+          <div className="card-body">
+            <RelationEditor relation={draft} entities={entities} block={block} isNew
+              onChange={setDraft}
+              onSave={async () => {
+                const result = await onCreateRelation(draft);
+                if (result) {
+                  setDraft(defaultRelationDraft(entities || [], block));
+                  setShowAdd(false);
+                }
+              }} />
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

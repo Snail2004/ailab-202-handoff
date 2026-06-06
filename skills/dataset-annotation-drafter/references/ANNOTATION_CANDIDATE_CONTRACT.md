@@ -148,6 +148,7 @@ Return exactly one JSON object:
 - `doc_id` and `chapter_id`: echo the input exactly.
 - `existing_entity_id`: set when the candidate clearly matches a known entity; otherwise use `null`.
 - `entity_key`: required when `existing_entity_id` is `null`. Use a stable lowercase slug, e.g. `margaret_saville`.
+- `entity_type`: use only `person`, `place`, `org`, or `concept`. Named objects/products/artifacts are `concept`; do not emit `named_object`.
 - `existing_term_id`: set when the candidate clearly matches a known term; otherwise use `null`.
 - `term_key`: required when `existing_term_id` is `null`. Use a stable lowercase slug based on `source_term`.
 - `surface`: copy exact text from `clean_text`.

@@ -754,28 +754,70 @@ function downloadJsonFile(filename, data) {
   URL.revokeObjectURL(url);
 }
 
-function translationPreviewPrompt(docId, chapterId) {
+function translationPreviewPaths(inputBundle, docId, chapterId) {
+  const paths = inputBundle?.paths || {};
+  const safeChapter = (chapterId || "").replace(/[^A-Za-z0-9_-]/g, "_") || "chapter";
+  const fallbackRoot = docId ? `ailab_projects/${docId}` : "";
+  return {
+    project_root: paths.project_root || fallbackRoot,
+    input: paths.input || (fallbackRoot ? `${fallbackRoot}/working/translation_preview/input/${safeChapter}_input.json` : ""),
+    preview_output_suggested: paths.preview_output_suggested || (fallbackRoot ? `${fallbackRoot}/working/translation_preview/agent_outputs/${safeChapter}_preview.json` : ""),
+    runs_dir: paths.runs_dir || (fallbackRoot ? `${fallbackRoot}/working/translation_preview/runs` : ""),
+  };
+}
+
+function translationPreviewPrompt(docId, chapterId, inputBundle) {
+  const paths = translationPreviewPaths(inputBundle, docId, chapterId);
   return [
-    "Bạn là Translation Preview Agent cho dự án AI-LAB.",
-    "Trước khi làm, hãy đọc:",
+    "You are the AI-LAB Translation Preview Agent.",
+    "",
+    "Read first:",
     "1. skills/dataset-translation-preview/SKILL.md",
     "2. skills/dataset-translation-preview/references/TRANSLATION_PREVIEW_CONTRACT.md",
     "",
-    "Nguồn đang xử lý:",
+    "Current source:",
     `- doc_id: ${docId || "<doc_id>"}`,
     `- chapter_id: ${chapterId || "<chapter_id>"}`,
+    `- project folder: ${paths.project_root || ""}`,
+    `- translation_input: ${paths.input || ""}`,
+    `- preview_output_suggested: ${paths.preview_output_suggested || ""}`,
     "",
-    "Yêu cầu:",
-    "- Dùng đúng input bundle JSON được export từ web tool.",
-    "- Không dịch ngoài các block có trong bundle.",
-    "- Tuân thủ canonical_target / expected_target / forbidden_variants.",
-    "- Áp dụng address_policy khi discourse speaker/addressee và relation phù hợp.",
-    "- Không tự tạo span/start/end/offset.",
-    "- Không ghi canonical/gold/manual_reference_subset.",
-    "- Output đúng một JSON object theo contract, không bọc markdown code block.",
+    "Requirements:",
+    "- Read the input bundle JSON from translation_input above as UTF-8 (it contains Vietnamese; in Python use open(path, encoding=\"utf-8\")).",
+    "- Translate only blocks included in the bundle.",
+    "- Obey canonical_target / expected_target / forbidden_variants.",
+    "- Apply address_policy when discourse speaker/addressee and relation match.",
+    "- Do not create span/start/end/offset.",
+    "- Do not write canonical/gold/manual_reference_subset.",
+    "- Output exactly one JSON object following the contract. Do not wrap it in markdown.",
     "",
-    "Dán input bundle JSON bên dưới rồi sinh preview JSON để import lại vào web tool."
+    "Output:",
+    "- Preferred: return exactly one JSON object to paste back into the web tool (the paste path is always UTF-8 safe).",
+    "- If you write the preview to a file (preview_output_suggested above), you MUST write it as UTF-8 WITHOUT BOM. Do NOT use the OS default encoding / ANSI / cp1252 — on Windows that replaces every Vietnamese diacritic with \"?\" and destroys the text. In Python: open(path, \"w\", encoding=\"utf-8\"). Never use Out-File/Set-Content without -Encoding utf8.",
+    "- After writing a file, verify it still contains real Vietnamese letters (e.g. \"ông\", \"ngài\"), not \"?\".",
+    "- The JSON is imported back with Load preview file or paste."
   ].join("\n");
+}
+
+async function decodeUploadedFile(file) {
+  // Robust decode. PowerShell ">" / Out-File default to UTF-16LE with a BOM, and
+  // some editors add a UTF-8 BOM. file.text() assumes UTF-8 and mangles those, so
+  // sniff the byte-order mark and decode accordingly. This rescues Vietnamese from
+  // UTF-16/BOM saves (their bytes are intact, only the decoding was wrong).
+  const buf = new Uint8Array(await file.arrayBuffer());
+  let encoding = "utf-8";
+  let start = 0;
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) { encoding = "utf-16le"; start = 2; }
+  else if (buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff) { encoding = "utf-16be"; start = 2; }
+  else if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) { encoding = "utf-8"; start = 3; }
+  return new TextDecoder(encoding).decode(buf.subarray(start));
+}
+
+function countMojibakeMarks(text) {
+  // A "?" glued to a letter (e.g. "?ng", "tr??ng") is almost never a real question
+  // mark — it is the cp1252/ANSI-save signature where Vietnamese diacritics were
+  // replaced by "?". A real "?" is followed by space/quote/end, not by a letter.
+  return (String(text || "").match(/\?(?=[A-Za-z])/g) || []).length;
 }
 
 function TranslationPreviewView({
@@ -871,6 +913,36 @@ function TranslationPreviewView({
 
   const currentChapter = chapters.find(ch => ch.chapter_id === selectedChapterId) || {};
   const warnings = loadedRun?.warnings || [];
+  const inputPaths = React.useMemo(
+    () => translationPreviewPaths(inputBundle, docId, selectedChapterId),
+    [inputBundle, docId, selectedChapterId]
+  );
+
+  React.useEffect(() => {
+    let alive = true;
+    if (!docId || !selectedChapterId) {
+      setInputBundle(null);
+      setInputText("");
+      return () => { alive = false; };
+    }
+    setInputLoading(true);
+    window.AILAB_API.getSavedTranslationPreviewInput(docId, selectedChapterId)
+      .then(data => {
+        if (!alive) return;
+        setInputBundle(data);
+        setInputText(prettyJson(data));
+      })
+      .catch(err => {
+        if (!alive) return;
+        if (err?.status !== 404) {
+          setError(err?.message || "Cannot load saved translation preview input.");
+        }
+        setInputBundle(null);
+        setInputText("");
+      })
+      .finally(() => alive && setInputLoading(false));
+    return () => { alive = false; };
+  }, [docId, selectedChapterId]);
 
   function changeChapter(chapterId) {
     setSelectedChapterId(chapterId);
@@ -898,7 +970,7 @@ function TranslationPreviewView({
       const data = await window.AILAB_API.getTranslationPreviewInput(docId, selectedChapterId);
       setInputBundle(data);
       setInputText(prettyJson(data));
-      setLoopNotice("Input bundle built. Copy or download it for the translation preview agent.");
+      setLoopNotice(`Input bundle built and saved: ${data.paths?.input || "working/translation_preview/input"}.`);
     } catch (err) {
       setInputBundle(null);
       setInputText("");
@@ -914,8 +986,14 @@ function TranslationPreviewView({
     setLoopNotice("Input JSON copied.");
   }
 
+  async function copyInputPath() {
+    if (!inputPaths.input) return;
+    await copyPlainText(inputPaths.input);
+    setLoopNotice("Input path copied.");
+  }
+
   async function copyPrompt() {
-    await copyPlainText(translationPreviewPrompt(docId, selectedChapterId));
+    await copyPlainText(translationPreviewPrompt(docId, selectedChapterId, inputBundle));
     setLoopNotice("Translation preview prompt copied.");
   }
 
@@ -948,12 +1026,45 @@ function TranslationPreviewView({
     }
   }
 
+  async function loadAgentPreviewRun() {
+    if (!docId || !selectedChapterId) return;
+    setImporting(true);
+    setError("");
+    setLoopNotice("");
+    setImportWarnings([]);
+    try {
+      const data = await window.AILAB_API.importAgentTranslationPreviewRun(docId, selectedChapterId);
+      const warnings = data.warnings || [];
+      setImportWarnings(warnings);
+      await refreshRuns(data.run?.run_id);
+      setLoadedRun(data.run || null);
+      setLoopNotice(`Agent preview imported: ${data.run?.run_id || "new run"}.`);
+    } catch (err) {
+      setError(err?.message || "Cannot load agent preview output.");
+    } finally {
+      setImporting(false);
+    }
+  }
+
   async function loadImportFile(event) {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
-      setImportText(await file.text());
-      setLoopNotice(`Loaded preview JSON file: ${file.name}.`);
+      const text = await decodeUploadedFile(file);
+      setImportText(text);
+      const mojibake = countMojibakeMarks(text);
+      if (mojibake >= 8) {
+        setLoopNotice("");
+        setError(
+          `"${file.name}" looks corrupted: ${mojibake} Vietnamese marks were replaced by "?" ` +
+          "(the file was saved as ANSI/cp1252, not UTF-8). Diacritics cannot be recovered from this " +
+          "file — re-save the agent output as UTF-8 (VS Code: \"Save with Encoding -> UTF-8\", or paste " +
+          "the JSON straight into the box above), then load again."
+        );
+      } else {
+        setError("");
+        setLoopNotice(`Loaded preview JSON file: ${file.name}.`);
+      }
     } catch (err) {
       setError(err?.message || "Cannot read preview JSON file.");
     } finally {
@@ -1002,8 +1113,11 @@ function TranslationPreviewView({
               <button className="btn" onClick={buildInputBundle} disabled={!selectedChapterId || inputLoading}>
                 <Ic.layers size={13} /> {inputLoading ? "Building..." : "Build input"}
               </button>
-              <button className="btn" onClick={copyPrompt} disabled={!selectedChapterId}>
+              <button className="btn" onClick={copyPrompt} disabled={!inputBundle}>
                 <Ic.sparkle size={13} /> Copy prompt
+              </button>
+              <button className="btn" onClick={copyInputPath} disabled={!inputPaths.input || !inputBundle}>
+                <Ic.folder size={13} /> Copy path
               </button>
               <button className="btn" onClick={copyInputJson} disabled={!inputText}>
                 <Ic.doc size={13} /> Copy JSON
@@ -1030,6 +1144,9 @@ function TranslationPreviewView({
               aria-label="Translation preview output JSON"
             />
             <div className="tp-import-actions">
+              <button className="btn" onClick={loadAgentPreviewRun} disabled={!selectedChapterId || importing}>
+                <Ic.sparkle size={13} /> Load agent preview
+              </button>
               <button className="btn" onClick={() => importFileRef.current?.click()}>
                 <Ic.upload size={13} /> Load preview file
               </button>

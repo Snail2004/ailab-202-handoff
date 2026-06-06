@@ -565,6 +565,12 @@ class BackendApiSmokeTest(unittest.TestCase):
         bundle = response.get_json()["data"]
         self.assertEqual(bundle["doc_id"], "gold_demo_01")
         self.assertEqual(bundle["chapter_id"], "gold_demo_01_ch01")
+        input_path = self._project_root("gold_demo_01").joinpath(
+            "working", "translation_preview", "input", "gold_demo_01_ch01_input.json"
+        )
+        self.assertTrue(input_path.exists())
+        self.assertEqual(bundle["paths"]["input"], str(input_path.resolve()))
+        self.assertIn("preview_output_suggested", bundle["paths"])
         self.assertEqual(len(bundle["blocks"]), 7)
         self.assertTrue(all(block["block_id"].startswith("gold_demo_01_ch01_") for block in bundle["blocks"]))
 
@@ -589,6 +595,35 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertIsInstance(bundle["chapter_summary"]["key_events"], list)
         self.assertIsInstance(bundle["chapter_summary"]["open_threads"], list)
         self._assert_no_preview_input_span_keys(bundle)
+
+        saved = self.client.get("/api/projects/gold_demo_01/translation-preview/input/saved?chapter_id=gold_demo_01_ch01")
+        self.assertEqual(saved.status_code, 200, saved.get_json())
+        self.assertEqual(saved.get_json()["data"]["paths"]["input"], str(input_path.resolve()))
+        self.assertEqual(len(saved.get_json()["data"]["blocks"]), 7)
+
+    def test_translation_preview_import_agent_output_file(self):
+        doc_id = "translation_preview_agent_output"
+        dataset = self._make_txt_project(doc_id)
+        chapter_id = dataset["chapters"][0]["chapter_id"]
+        block = next(item for item in dataset["blocks"] if item["block_type"] != "heading")
+
+        bundle_response = self.client.get(f"/api/projects/{doc_id}/translation-preview/input?chapter_id={chapter_id}")
+        self.assertEqual(bundle_response.status_code, 200, bundle_response.get_json())
+        output_path = Path(bundle_response.get_json()["data"]["paths"]["preview_output_suggested"])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        preview = self._good_translation_preview(doc_id, chapter_id, block["block_id"])
+        output_path.write_text(json.dumps(preview, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        response = self.client.post(f"/api/projects/{doc_id}/translation-preview/runs/agent-output", json={"chapter_id": chapter_id})
+        self.assertEqual(response.status_code, 201, response.get_json())
+        data = response.get_json()["data"]
+        self.assertEqual(data["run"]["chapter_id"], chapter_id)
+        self.assertEqual(data["paths"]["agent_output"], str(output_path.resolve()))
+        self.assertTrue(
+            self._project_root(doc_id)
+            .joinpath("working", "translation_preview", "runs", f"{data['run']['run_id']}.json")
+            .exists()
+        )
 
     def test_translation_preview_input_missing_chapter(self):
         response = self.client.get("/api/projects/gold_demo_01/translation-preview/input?chapter_id=missing_chapter")
@@ -674,6 +709,29 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertEqual(block["discourse"]["addressee_entity_id"], "e_002")
         self.assertIn("e_001", block["annotations"]["entity_mentions"])
         self.assertIn("g_001", next(item for item in dataset["blocks"] if item["block_id"] == second["block_id"])["annotations"]["term_occurrences"])
+        self._assert_project_valid(doc_id)
+
+    def test_annotation_entity_type_aliases_normalize_before_apply(self):
+        doc_id = "annotation_entity_type_alias"
+        _dataset, chapter, first, second, _third = self._annotation_fixture(doc_id)
+        candidate = self._good_annotation_candidate(doc_id, chapter["chapter_id"], first, second)
+        candidate["entity_candidates"][1]["entity_type"] = "named_object"
+        resolved = self.client.post(f"/api/projects/{doc_id}/annotate/resolve", json={
+            "candidate": candidate,
+            "user": "tester",
+        })
+        self.assertEqual(resolved.status_code, 201, resolved.get_json())
+        self.assertEqual(resolved.get_json()["data"]["entities"][1]["entity_type"], "concept")
+
+        applied = self.client.post(f"/api/projects/{doc_id}/annotate/apply", json={
+            "chapter_id": chapter["chapter_id"],
+            "approved": True,
+            "accept_all_resolved": True,
+            "user": "tester",
+        })
+        self.assertEqual(applied.status_code, 201, applied.get_json())
+        entities = self._jsonl_rows(doc_id, "entities.jsonl")
+        self.assertEqual(entities[1]["entity_type"], "concept")
         self._assert_project_valid(doc_id)
 
     def test_entity_relation_crud_routes(self):
