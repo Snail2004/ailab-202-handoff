@@ -999,6 +999,21 @@ function App() {
     setEntities(es => es.map(e => e.entity_id === entityId ? { ...e, ...patch } : e));
     queueSave(`entity:${entityId}:${Object.keys(patch).join(",")}`, () => API.patchEntity(activeDocId, entityId, { ...patch, user: currentUser() }));
   }
+  async function createRelation(payload) {
+    if (!activeDocId) return null;
+    openRightTab("relations");
+    const result = await mutate(() => API.createRelation(activeDocId, { ...payload, user: currentUser() }), {
+      success: "Relation added",
+      fail: "Add relation failed",
+    });
+    return result;
+  }
+  function updateRelation(relationId, patch) {
+    const { relation_id, doc_id, ...apiPatch } = patch || {};
+    setRelations(rs => rs.map(r => r.relation_id === relationId ? { ...r, ...apiPatch } : r));
+    const fields = Object.keys(apiPatch).join(",") || "save";
+    queueSave(`relation:${relationId}:${fields}`, () => API.patchRelation(activeDocId, relationId, { ...apiPatch, user: currentUser() }));
+  }
   function updateSummary(chapterId, patch) {
     if (!chapterId) return;
     setSummaries(ss => {
@@ -1078,6 +1093,10 @@ function App() {
     setModal({ kind: "delete-entity", entity: e });
   }
 
+  function deleteRelation(r) {
+    setModal({ kind: "delete-relation", relation: r });
+  }
+
   async function confirmDeleteTerm() {
     const term = modal?.term;
     if (!term) return;
@@ -1111,6 +1130,23 @@ function App() {
       const first = firstError(err);
       setModal({ kind: "delete-blocked", title: "Cannot delete entity", message: errorMessage(err), references: first.references || [] });
       toast("Cannot delete entity", "bad", errorMessage(err));
+    }
+  }
+
+  async function confirmDeleteRelation() {
+    const relation = modal?.relation;
+    if (!relation) return;
+    touchStart();
+    try {
+      await API.deleteRelation(activeDocId, relation.relation_id, { user: currentUser() });
+      await loadDataset(activeDocId, { silent: true });
+      touchDone();
+      setModal(null);
+      toast(`Deleted relation ${relation.relation_id}`, "good");
+    } catch (err) {
+      touchDone();
+      setModal({ kind: "delete-blocked", title: "Cannot delete relation", message: errorMessage(err), references: [] });
+      toast("Cannot delete relation", "bad", errorMessage(err));
     }
   }
 
@@ -1301,6 +1337,7 @@ function App() {
             ctx={{ docInfo, terms: blockTerms, entities: blockEntities, allEntities: entities, relations, block, summary, references, errors, stats, freezeReasons,
               schemaMigrating, onMigrateSchema: migrateSchema,
               onDeleteTerm: deleteTerm, onDeleteEntity: deleteEntity, onUpdateTerm: updateTerm, onUpdateEntity: updateEntity, onUpdateSummary: updateSummary,
+              onCreateRelation: createRelation, onUpdateRelation: updateRelation, onDeleteRelation: deleteRelation,
               onUpdateBlockNotes: updateBlockNotes,
               onUpdateReference: updateReference, onCreateReference: createReferenceDraft, onSaveDraft: saveDraft, onMarkReviewedReference: markReviewedReference,
               onLockReference: lockReference, onUpdateDiscourse: updateDiscourse, onJump: jumpTo, history: historyState }} />
@@ -1366,7 +1403,19 @@ function App() {
               <button className="btn danger" onClick={confirmDeleteEntity}>Delete entity</button></>}>
             <p>Delete <b>{entity.canonical_source || entity.entity_id}</b> and remove its own mention footprint from the document?</p>
             <p className="muted">{mentionCount} mention(s) across {blockCount || 0} block(s) will be removed. This is undoable.</p>
-            <p className="muted">If this entity is used by discourse or chapter summary, deletion will be blocked and those references must be removed first.</p>
+            <p className="muted">If this entity is used by discourse, chapter summary, or relation, deletion will be blocked and those references must be removed first.</p>
+          </Modal>
+        );
+      })()}
+
+      {modal?.kind === "delete-relation" && (() => {
+        const relation = modal.relation;
+        return (
+          <Modal title="Delete entity relation" icon={Ic.trash} tone="bad" onClose={() => setModal(null)}
+            actions={<><button className="btn" onClick={() => setModal(null)}>Cancel</button>
+              <button className="btn danger" onClick={confirmDeleteRelation}>Delete relation</button></>}>
+            <p>Delete relation <b>{relation.relation_id}</b>?</p>
+            <p className="muted">This removes only the document-level address-policy relation. Entity mentions, glossary, discourse, and summaries are kept. This is undoable.</p>
           </Modal>
         );
       })()}

@@ -676,6 +676,74 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertIn("g_001", next(item for item in dataset["blocks"] if item["block_id"] == second["block_id"])["annotations"]["term_occurrences"])
         self._assert_project_valid(doc_id)
 
+    def test_entity_relation_crud_routes(self):
+        doc_id = "relation_crud"
+        _dataset, chapter, first, second, _third = self._annotation_fixture(doc_id)
+        candidate = self._good_annotation_candidate(doc_id, chapter["chapter_id"], first, second)
+        resolved = self.client.post(f"/api/projects/{doc_id}/annotate/resolve", json={
+            "candidate": candidate,
+            "user": "tester",
+        })
+        self.assertEqual(resolved.status_code, 201)
+        applied = self.client.post(f"/api/projects/{doc_id}/annotate/apply", json={
+            "chapter_id": chapter["chapter_id"],
+            "approved": True,
+            "accept_all_resolved": True,
+            "user": "tester",
+        })
+        self.assertEqual(applied.status_code, 201, applied.get_json())
+
+        create = self.client.post(f"/api/projects/{doc_id}/relations", json={
+            "source_entity_id": "e_002",
+            "target_entity_id": "e_001",
+            "relation_type": "friend",
+            "address_policy": {
+                "source_to_target": {"self_term": "toi", "address_term": "ban"},
+                "target_to_source": {"self_term": "toi", "address_term": "ban"},
+            },
+            "evidence": [{"block_id": first["block_id"], "surface": "Alice saw Bob."}],
+            "confidence": 0.74,
+            "notes": "Manual relation fixture.",
+            "user": "tester",
+        })
+        self.assertEqual(create.status_code, 201, create.get_json())
+        relation = create.get_json()["data"]
+        self.assertEqual(relation["relation_id"], "rel_002")
+        self.assertEqual(relation["source_entity_id"], "e_002")
+
+        patch = self.client.patch(f"/api/projects/{doc_id}/relations/{relation['relation_id']}", json={
+            "relation_type": "rival",
+            "address_policy": {
+                "source_to_target": {"self_term": "tao", "address_term": "may"},
+                "target_to_source": {"self_term": "toi", "address_term": "anh"},
+            },
+            "user": "tester",
+        })
+        self.assertEqual(patch.status_code, 200, patch.get_json())
+        self.assertEqual(patch.get_json()["data"]["relation_type"], "rival")
+        self.assertEqual(patch.get_json()["data"]["address_policy"]["source_to_target"]["address_term"], "may")
+
+        bad = self.client.post(f"/api/projects/{doc_id}/relations", json={
+            "source_entity_id": "e_missing",
+            "target_entity_id": "e_001",
+            "relation_type": "friend",
+        })
+        self.assertEqual(bad.status_code, 404)
+
+        blocked_entity_delete = self.client.delete(f"/api/projects/{doc_id}/entities/e_001", json={"user": "tester"})
+        self.assertEqual(blocked_entity_delete.status_code, 400)
+        refs = blocked_entity_delete.get_json()["errors"][0]["references"]
+        self.assertTrue(any(ref.get("kind") == "relation" for ref in refs))
+
+        delete = self.client.delete(f"/api/projects/{doc_id}/relations/{relation['relation_id']}", json={"user": "tester"})
+        self.assertEqual(delete.status_code, 200, delete.get_json())
+        self.assertEqual([row["relation_id"] for row in self._jsonl_rows(doc_id, "entity_relations.jsonl")], ["rel_001"])
+
+        undo = self.client.post(f"/api/projects/{doc_id}/undo", json={"user": "tester"})
+        self.assertEqual(undo.status_code, 200, undo.get_json())
+        self.assertIn("rel_002", [row["relation_id"] for row in self._jsonl_rows(doc_id, "entity_relations.jsonl")])
+        self._assert_project_valid(doc_id)
+
     def test_annotation_relation_unresolved_ref_is_not_auto_applied(self):
         doc_id = "annotation_relation_unresolved"
         _dataset, chapter, first, _second, _third = self._annotation_fixture(doc_id)

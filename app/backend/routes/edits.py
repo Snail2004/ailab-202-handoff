@@ -6,12 +6,15 @@ from services.mutations import (
     MutationError,
     add_entity_from_selection,
     add_glossary_from_selection,
+    create_entity_relation,
     delete_entity,
+    delete_entity_relation,
     delete_glossary,
     patch_block,
     patch_block_notes,
     patch_block_review,
     patch_entity,
+    patch_entity_relation,
     patch_glossary,
     patch_metadata,
     patch_summary,
@@ -235,6 +238,73 @@ def remove_entity(doc_id: str, entity_id: str):
             target={"doc_id": doc_id, "entity_id": entity_id},
             user=user,
             operation=lambda: delete_entity(project_path, entity_id, user),
+        ))
+    except Exception as exc:
+        return _handle(exc)
+
+
+@bp.post("/projects/<doc_id>/relations")
+def create_relation(doc_id: str):
+    payload = _payload()
+    try:
+        project_path = _project(doc_id)
+        user = _user(payload)
+        return ok(_history(
+            project_path,
+            action="create_entity_relation",
+            label="Add entity relation",
+            target={"doc_id": doc_id, "kind": "entity_relation"},
+            user=user,
+            operation=lambda: create_entity_relation(project_path, payload, user),
+        ), status=201)
+    except Exception as exc:
+        return _handle(exc)
+
+
+@bp.patch("/projects/<doc_id>/relations/<relation_id>")
+def update_relation(doc_id: str, relation_id: str):
+    payload = _payload()
+    try:
+        project_path = _project(doc_id)
+        user = _user(payload)
+        fields = sorted(set(payload) & {
+            "source_entity_id",
+            "target_entity_id",
+            "relation_type",
+            "state_label",
+            "valid_from_block_id",
+            "valid_to_block_id",
+            "trigger_event_id",
+            "address_policy",
+            "evidence",
+            "confidence",
+            "notes",
+        })
+        return ok(_history(
+            project_path,
+            action="patch_entity_relation",
+            label=f"Edit relation {relation_id}",
+            target={"doc_id": doc_id, "relation_id": relation_id, "fields": fields},
+            user=user,
+            operation=lambda: patch_entity_relation(project_path, relation_id, payload, user),
+        ))
+    except Exception as exc:
+        return _handle(exc)
+
+
+@bp.delete("/projects/<doc_id>/relations/<relation_id>")
+def remove_relation(doc_id: str, relation_id: str):
+    payload = _payload()
+    try:
+        project_path = _project(doc_id)
+        user = _user(payload)
+        return ok(_history(
+            project_path,
+            action="delete_entity_relation",
+            label=f"Delete relation {relation_id}",
+            target={"doc_id": doc_id, "relation_id": relation_id},
+            user=user,
+            operation=lambda: delete_entity_relation(project_path, relation_id, user),
         ))
     except Exception as exc:
         return _handle(exc)

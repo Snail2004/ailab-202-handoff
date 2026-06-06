@@ -57,6 +57,19 @@ EDITABLE_ENTITY = {
     "annotated_by",
     "confidence",
 }
+EDITABLE_RELATION = {
+    "source_entity_id",
+    "target_entity_id",
+    "relation_type",
+    "state_label",
+    "valid_from_block_id",
+    "valid_to_block_id",
+    "trigger_event_id",
+    "address_policy",
+    "evidence",
+    "confidence",
+    "notes",
+}
 EDITABLE_SUMMARY = {
     "summary_source",
     "source",
@@ -135,6 +148,132 @@ def _next_id(rows: list[dict[str, Any]], field: str, prefix: str) -> str:
         if candidate not in used:
             return candidate
         index += 1
+
+
+def _clean_optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _clean_address_pair(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    pair: dict[str, Any] = {}
+    for key in ("self_term", "address_term"):
+        if key in source:
+            pair[key] = _clean_optional_text(source.get(key))
+    return pair
+
+
+def _clean_address_policy(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    policy: dict[str, Any] = {}
+    for key in ("source_to_target", "target_to_source"):
+        pair = _clean_address_pair(source.get(key))
+        if pair and any(v is not None for v in pair.values()):
+            policy[key] = pair
+    return policy
+
+
+def _validate_relation_dataset(
+    project_path: Path,
+    document: dict[str, Any],
+    relations: list[dict[str, Any]],
+) -> None:
+    from services.annotation_flow import AnnotationError, _validate_full_dataset
+
+    try:
+        _validate_full_dataset(
+            project_path,
+            document,
+            read_jsonl(_jsonl_path(project_path, "glossary")),
+            read_jsonl(_jsonl_path(project_path, "entities")),
+            read_jsonl(_jsonl_path(project_path, "chapter_summaries")),
+            relations,
+        )
+    except AnnotationError as exc:
+        raise MutationError(exc.code, str(exc), exc.status, **getattr(exc, "details", {}))
+
+
+def _clean_relation_payload(
+    project_path: Path,
+    document: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    require_core: bool,
+) -> dict[str, Any]:
+    _reject_unknown(payload, EDITABLE_RELATION)
+    entity_ids = {row.get("entity_id") for row in read_jsonl(_jsonl_path(project_path, "entities"))}
+    block_ids = _block_ids(document)
+    clean: dict[str, Any] = {}
+
+    if "source_entity_id" in payload or require_core:
+        source_id = _clean_optional_text(payload.get("source_entity_id"))
+        if not source_id:
+            raise MutationError("missing_relation_source", "Relation requires source_entity_id.")
+        if source_id not in entity_ids:
+            raise MutationError("missing_entity", f"Relation source entity not found: {source_id}", 404)
+        clean["source_entity_id"] = source_id
+
+    if "target_entity_id" in payload or require_core:
+        target_id = _clean_optional_text(payload.get("target_entity_id"))
+        if not target_id:
+            raise MutationError("missing_relation_target", "Relation requires target_entity_id.")
+        if target_id not in entity_ids:
+            raise MutationError("missing_entity", f"Relation target entity not found: {target_id}", 404)
+        clean["target_entity_id"] = target_id
+
+    source_id = clean.get("source_entity_id")
+    target_id = clean.get("target_entity_id")
+    if source_id and target_id and source_id == target_id:
+        raise MutationError("invalid_relation_pair", "Relation source and target must be different entities.")
+
+    if "relation_type" in payload or require_core:
+        relation_type = _clean_optional_text(payload.get("relation_type"))
+        if not relation_type:
+            raise MutationError("missing_relation_type", "Relation requires relation_type.")
+        clean["relation_type"] = relation_type
+
+    for key in ("state_label", "valid_from_block_id", "valid_to_block_id", "trigger_event_id", "notes"):
+        if key not in payload:
+            continue
+        value = _clean_optional_text(payload.get(key))
+        if key in {"valid_from_block_id", "valid_to_block_id"} and value and value not in block_ids:
+            raise MutationError("missing_block", f"Relation phase block not found: {value}", 404)
+        clean[key] = value
+
+    if "address_policy" in payload:
+        policy = _clean_address_policy(payload.get("address_policy"))
+        clean["address_policy"] = policy if policy else None
+
+    if "evidence" in payload:
+        evidence = []
+        raw_items = payload.get("evidence") if isinstance(payload.get("evidence"), list) else []
+        for item in raw_items:
+            raw = item if isinstance(item, dict) else {}
+            block_id = _clean_optional_text(raw.get("block_id"))
+            if not block_id:
+                raise MutationError("invalid_relation_evidence", "Relation evidence requires block_id.")
+            if block_id not in block_ids:
+                raise MutationError("missing_block", f"Relation evidence block not found: {block_id}", 404)
+            row = {"block_id": block_id}
+            surface = _clean_optional_text(raw.get("surface"))
+            if surface:
+                row["surface"] = surface
+            evidence.append(row)
+        clean["evidence"] = evidence
+
+    if "confidence" in payload:
+        try:
+            confidence = float(payload.get("confidence"))
+        except (TypeError, ValueError):
+            raise MutationError("invalid_confidence", "Relation confidence must be a number from 0 to 1.")
+        if confidence < 0 or confidence > 1:
+            raise MutationError("invalid_confidence", "Relation confidence must be a number from 0 to 1.")
+        clean["confidence"] = confidence
+
+    return clean
 
 
 def _get_review_state(project_path: Path, document: dict[str, Any]) -> dict[str, Any]:
@@ -491,10 +630,17 @@ def delete_entity(project_path: Path, entity_id: str, user: str = "local") -> di
         if entity_id in row.get("characters_present", []):
             external_refs.append({"kind": "summary", "chapter_id": row.get("chapter_id"), "field": "characters_present"})
 
+    relations = read_jsonl(_jsonl_path(project_path, "entity_relations"))
+    for row in relations:
+        if row.get("source_entity_id") == entity_id:
+            external_refs.append({"kind": "relation", "relation_id": row.get("relation_id"), "field": "source_entity_id"})
+        if row.get("target_entity_id") == entity_id:
+            external_refs.append({"kind": "relation", "relation_id": row.get("relation_id"), "field": "target_entity_id"})
+
     if external_refs:
         raise MutationError(
             "entity_still_referenced",
-            "Entity is referenced by discourse or chapter summary. Remove those references first.",
+            "Entity is referenced by discourse, chapter summary, or relation. Remove those references first.",
             references=external_refs,
         )
 
@@ -522,6 +668,59 @@ def delete_entity(project_path: Path, entity_id: str, user: str = "local") -> di
         "removed_mentions": removed_mentions,
         "removed_block_refs": removed_block_refs,
     }
+
+
+def create_entity_relation(project_path: Path, payload: dict[str, Any], user: str = "local") -> dict[str, Any]:
+    document = _read_document(project_path)
+    rows = read_jsonl(_jsonl_path(project_path, "entity_relations"))
+    clean = _clean_relation_payload(project_path, document, payload, require_core=True)
+    relation_id = _next_id(rows, "relation_id", "rel")
+    row = {
+        "relation_id": relation_id,
+        "doc_id": _doc_id(document),
+        **clean,
+    }
+    # Omit empty optional objects so the sidecar stays compact.
+    row = {key: value for key, value in row.items() if value is not None}
+    rows.append(row)
+    _validate_relation_dataset(project_path, document, rows)
+    write_jsonl_atomic(_jsonl_path(project_path, "entity_relations"), rows)
+    log_event(project_path, "create_entity_relation", {"relation_id": relation_id}, user)
+    return row
+
+
+def patch_entity_relation(project_path: Path, relation_id: str, payload: dict[str, Any], user: str = "local") -> dict[str, Any]:
+    document = _read_document(project_path)
+    rows = read_jsonl(_jsonl_path(project_path, "entity_relations"))
+    row = next((item for item in rows if item.get("relation_id") == relation_id), None)
+    if row is None:
+        raise MutationError("missing_relation", f"Relation not found: {relation_id}", 404)
+
+    clean = _clean_relation_payload(project_path, document, payload, require_core=False)
+    candidate = {**row, **clean}
+    if candidate.get("source_entity_id") == candidate.get("target_entity_id"):
+        raise MutationError("invalid_relation_pair", "Relation source and target must be different entities.")
+    for key, value in clean.items():
+        if value is None:
+            row.pop(key, None)
+        else:
+            row[key] = value
+    row["doc_id"] = _doc_id(document)
+    _validate_relation_dataset(project_path, document, rows)
+    write_jsonl_atomic(_jsonl_path(project_path, "entity_relations"), rows)
+    log_event(project_path, "patch_entity_relation", {"relation_id": relation_id, "fields": sorted(set(payload) & EDITABLE_RELATION)}, user)
+    return row
+
+
+def delete_entity_relation(project_path: Path, relation_id: str, user: str = "local") -> dict[str, Any]:
+    rows = read_jsonl(_jsonl_path(project_path, "entity_relations"))
+    target = next((row for row in rows if row.get("relation_id") == relation_id), None)
+    if target is None:
+        raise MutationError("missing_relation", f"Relation not found: {relation_id}", 404)
+    kept = [row for row in rows if row.get("relation_id") != relation_id]
+    write_jsonl_atomic(_jsonl_path(project_path, "entity_relations"), kept)
+    log_event(project_path, "delete_entity_relation", {"relation_id": relation_id}, user)
+    return {"relation_id": relation_id, "deleted": True}
 
 
 def patch_summary(project_path: Path, chapter_id: str, payload: dict[str, Any], user: str = "local") -> dict[str, Any]:
@@ -552,6 +751,7 @@ def snapshot_project(project_path: Path) -> dict[str, Any]:
         "document": read_json(_document_path(project_path)),
         "glossary": read_jsonl(_jsonl_path(project_path, "glossary")),
         "entities": read_jsonl(_jsonl_path(project_path, "entities")),
+        "relations": read_jsonl(_jsonl_path(project_path, "entity_relations")),
         "summaries": read_jsonl(_jsonl_path(project_path, "chapter_summaries")),
         "references": read_jsonl(_jsonl_path(project_path, "manual_reference_subset")),
     })

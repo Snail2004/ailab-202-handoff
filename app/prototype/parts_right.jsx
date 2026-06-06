@@ -233,26 +233,183 @@ function AddressLine({ from, to, policy }) {
   );
 }
 
-function RelationsTab({ relations, entities, block }) {
+function defaultRelationDraft(entities, block) {
+  const speaker = block?.discourse?.speaker_entity_id || "";
+  const addressee = block?.discourse?.addressee_entity_id || "";
+  const first = entities?.[0]?.entity_id || "";
+  const second = entities?.find(e => e.entity_id !== first)?.entity_id || "";
+  return {
+    source_entity_id: speaker || first,
+    target_entity_id: addressee || second,
+    relation_type: "",
+    state_label: "",
+    valid_from_block_id: "",
+    valid_to_block_id: "",
+    trigger_event_id: "",
+    address_policy: {
+      source_to_target: { self_term: "", address_term: "" },
+      target_to_source: { self_term: "", address_term: "" },
+    },
+    evidence: block?.block_id ? [{ block_id: block.block_id, surface: "" }] : [],
+    confidence: 0.8,
+    notes: "",
+  };
+}
+
+function evidenceToText(evidence) {
+  return (evidence || []).map(item => `${item.block_id || ""}${item.surface ? "\t" + item.surface : ""}`).join("\n");
+}
+
+function textToEvidence(text) {
+  return String(text || "").split(/\r?\n/).map(line => line.trim()).filter(Boolean).map(line => {
+    const parts = line.split(/\t|\|/);
+    const block_id = (parts.shift() || "").trim();
+    const surface = parts.join("|").trim();
+    return surface ? { block_id, surface } : { block_id };
+  }).filter(item => item.block_id);
+}
+
+function RelationEditor({ relation, entities, block, onChange, onSave, onDelete, isNew }) {
+  const safe = relation || {};
+  const policy = safe.address_policy || {};
+  const update = patch => onChange({ ...safe, ...patch });
+  const updatePolicy = (direction, field, value) => {
+    const current = safe.address_policy || {};
+    update({
+      address_policy: {
+        ...current,
+        [direction]: {
+          ...(current[direction] || {}),
+          [field]: value,
+        },
+      },
+    });
+  };
+  const canSave = safe.source_entity_id && safe.target_entity_id && safe.source_entity_id !== safe.target_entity_id && safe.relation_type;
+  return (
+    <div className="relation-editor">
+      <div className="form-grid">
+        <FormField label="source_entity">
+          <select value={safe.source_entity_id || ""} onChange={e => update({ source_entity_id: e.target.value })}>
+            <option value="">-</option>
+            {(entities || []).map(e => <option key={e.entity_id} value={e.entity_id}>{e.canonical_source || e.entity_id}</option>)}
+          </select>
+        </FormField>
+        <FormField label="target_entity">
+          <select value={safe.target_entity_id || ""} onChange={e => update({ target_entity_id: e.target.value })}>
+            <option value="">-</option>
+            {(entities || []).map(e => <option key={e.entity_id} value={e.entity_id}>{e.canonical_source || e.entity_id}</option>)}
+          </select>
+        </FormField>
+        <FormField label="relation_type">
+          <input value={safe.relation_type || ""} placeholder="friend / rival / parent / stranger..." onChange={e => update({ relation_type: e.target.value })} />
+        </FormField>
+        <FormField label="confidence">
+          <input type="number" min="0" max="1" step="0.01" value={confidenceValue(safe.confidence)}
+            onChange={e => update({ confidence: e.target.value === "" ? 0 : Number(e.target.value) })} />
+        </FormField>
+      </div>
+
+      <MiniField label="address policy">
+        <div className="form-grid">
+          <FormField label="source self">
+            <input value={policy.source_to_target?.self_term || ""} placeholder="toi / ta / ong..." onChange={e => updatePolicy("source_to_target", "self_term", e.target.value)} />
+          </FormField>
+          <FormField label="source calls target">
+            <input value={policy.source_to_target?.address_term || ""} placeholder="ban / chau / nguoi..." onChange={e => updatePolicy("source_to_target", "address_term", e.target.value)} />
+          </FormField>
+          <FormField label="target self">
+            <input value={policy.target_to_source?.self_term || ""} placeholder="toi / chau / em..." onChange={e => updatePolicy("target_to_source", "self_term", e.target.value)} />
+          </FormField>
+          <FormField label="target calls source">
+            <input value={policy.target_to_source?.address_term || ""} placeholder="ban / ong / anh..." onChange={e => updatePolicy("target_to_source", "address_term", e.target.value)} />
+          </FormField>
+        </div>
+      </MiniField>
+
+      <div className="form-grid">
+        <FormField label="state_label">
+          <input value={safe.state_label || ""} placeholder="before_betrayal / default" onChange={e => update({ state_label: e.target.value })} />
+        </FormField>
+        <FormField label="trigger_event_id">
+          <input value={safe.trigger_event_id || ""} placeholder="optional event label" onChange={e => update({ trigger_event_id: e.target.value })} />
+        </FormField>
+        <FormField label="valid_from_block_id">
+          <input value={safe.valid_from_block_id || ""} placeholder={block?.block_id || "optional"} onChange={e => update({ valid_from_block_id: e.target.value })} />
+        </FormField>
+        <FormField label="valid_to_block_id">
+          <input value={safe.valid_to_block_id || ""} placeholder="optional" onChange={e => update({ valid_to_block_id: e.target.value })} />
+        </FormField>
+      </div>
+
+      <FormField label="evidence (one per line: block_id | surface)">
+        <textarea rows={3} value={evidenceToText(safe.evidence)} onChange={e => update({ evidence: textToEvidence(e.target.value) })} />
+      </FormField>
+      <FormField label="notes">
+        <textarea rows={2} value={safe.notes || ""} onChange={e => update({ notes: e.target.value })} />
+      </FormField>
+
+      <div className="ref-actions">
+        <button className="btn sm primary" disabled={!canSave} onClick={onSave}>
+          {isNew ? "Add relation" : "Save relation"}
+        </button>
+        {!isNew && <button className="btn sm danger" onClick={onDelete}><Ic.trash size={12} />Delete</button>}
+      </div>
+    </div>
+  );
+}
+
+function RelationsTab({ relations, entities, block, onCreateRelation, onUpdateRelation, onDeleteRelation }) {
   const safeRelations = relations || [];
   const entityMap = {};
   (entities || []).forEach(entity => { entityMap[entity.entity_id] = entity; });
   const [expanded, setExpanded] = React.useState(safeRelations[0]?.relation_id);
+  const [draft, setDraft] = React.useState(() => defaultRelationDraft(entities || [], block));
+  React.useEffect(() => {
+    setDraft(current => {
+      if (current.source_entity_id || current.target_entity_id || current.relation_type || current.notes) return current;
+      return defaultRelationDraft(entities || [], block);
+    });
+  }, [entities, block?.block_id]);
   React.useEffect(() => {
     if (safeRelations.length && !safeRelations.some(r => r.relation_id === expanded)) {
       setExpanded(safeRelations[0].relation_id);
     }
   }, [safeRelations, expanded]);
 
-  if (!safeRelations.length) {
-    return <Empty icon={Ic.users} text="No entity relations in this document." sub="Relations are document-level links for character address policy." />;
-  }
-
   const speakerId = block?.discourse?.speaker_entity_id || "";
   const addresseeId = block?.discourse?.addressee_entity_id || "";
 
   return (
     <div className="tab-body">
+      <div className="ref-explain">
+        <Ic.users size={12} />
+        <span><b>Document-level.</b> Relations connect two entities for Vietnamese address policy. They are not limited to the current block.</span>
+      </div>
+      <div className="card open">
+        <div className="card-head static">
+          <span className="card-title">Add relation</span>
+          <span className="card-spacer" />
+          <span className="pill pill-grey">{(entities || []).length} entities</span>
+        </div>
+        {(entities || []).length < 2 ? (
+          <div className="card-body">
+            <Empty icon={Ic.users} text="Need at least two entities." sub="Create entity mentions first, then add their relation here." />
+          </div>
+        ) : (
+          <div className="card-body">
+            <RelationEditor relation={draft} entities={entities} block={block} isNew
+              onChange={setDraft}
+              onSave={async () => {
+                const result = await onCreateRelation(draft);
+                if (result) setDraft(defaultRelationDraft(entities || [], block));
+              }} />
+          </div>
+        )}
+      </div>
+
+      {!safeRelations.length && <Empty icon={Ic.users} text="No entity relations in this document yet." sub="Use Add relation above or apply an annotation drafter candidate." />}
+
       {safeRelations.map(relation => {
         const open = expanded === relation.relation_id;
         const source = relationEntityLabel(relation.source_entity_id, entityMap);
@@ -321,6 +478,10 @@ function RelationsTab({ relations, entities, block }) {
                     <span>{relation.notes}</span>
                   </MiniField>
                 )}
+                <RelationEditor relation={relation} entities={entities} block={block}
+                  onChange={patch => onUpdateRelation(relation.relation_id, patch)}
+                  onSave={() => onUpdateRelation(relation.relation_id, {})}
+                  onDelete={() => onDeleteRelation(relation)} />
               </div>
             )}
           </div>
@@ -677,7 +838,8 @@ function RightPanel({ openTabs, onToggleTab, counts, ctx }) {
                 <div className="rp-content">
                   {t.id === "glossary" && <GlossaryTab terms={ctx.terms} onDeleteTerm={ctx.onDeleteTerm} onUpdateTerm={ctx.onUpdateTerm} />}
                   {t.id === "entities" && <EntitiesTab entities={ctx.entities} allEntities={ctx.allEntities} block={ctx.block} onUpdateEntity={ctx.onUpdateEntity} onUpdateDiscourse={ctx.onUpdateDiscourse} onDeleteEntity={ctx.onDeleteEntity} />}
-                  {t.id === "relations" && <RelationsTab relations={ctx.relations} entities={ctx.allEntities} block={ctx.block} />}
+                  {t.id === "relations" && <RelationsTab relations={ctx.relations} entities={ctx.allEntities} block={ctx.block}
+                    onCreateRelation={ctx.onCreateRelation} onUpdateRelation={ctx.onUpdateRelation} onDeleteRelation={ctx.onDeleteRelation} />}
                   {t.id === "summary" && <SummaryTab summary={ctx.summary} entities={ctx.allEntities} onUpdateSummary={ctx.onUpdateSummary} />}
                   {t.id === "notes" && <NotesTab block={ctx.block} onUpdateBlockNotes={ctx.onUpdateBlockNotes} />}
                   {t.id === "reference" && <ReferenceTab key={ctx.block.block_id} refs={ctx.references} block={ctx.block} onUpdateReference={ctx.onUpdateReference} onCreateReference={ctx.onCreateReference} onSaveDraft={ctx.onSaveDraft} onMarkReviewed={ctx.onMarkReviewedReference} onLockReference={ctx.onLockReference} />}
