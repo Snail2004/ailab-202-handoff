@@ -528,6 +528,84 @@ class BackendApiSmokeTest(unittest.TestCase):
         self.assertEqual(loaded_run["run_id"], run_id)
         self.assertEqual(loaded_run["blocks"][0]["block_id"], block["block_id"])
 
+    def test_export_package_includes_project_state_and_qc_without_previews(self):
+        doc_id = "export_dataset_package"
+        dataset = self._make_txt_project(doc_id)
+        chapter_id = dataset["chapters"][0]["chapter_id"]
+        block = next(item for item in dataset["blocks"] if item["block_type"] != "heading")
+        preview = self._good_translation_preview(doc_id, chapter_id, block["block_id"])
+
+        input_response = self.client.get(f"/api/projects/{doc_id}/translation-preview/input?chapter_id={chapter_id}")
+        self.assertEqual(input_response.status_code, 200, input_response.get_json())
+        imported = self.client.post(f"/api/projects/{doc_id}/translation-preview/runs", json={"preview": preview})
+        self.assertEqual(imported.status_code, 201, imported.get_json())
+
+        exported = self.client.post(f"/api/projects/{doc_id}/export", json={"user": "tester"})
+        self.assertEqual(exported.status_code, 201, exported.get_json())
+        data = exported.get_json()["data"]
+        self.assertEqual(data["manifest_data"]["kind"], "dataset_package")
+        self.assertTrue(data["manifest_data"]["qc_report"]["included"])
+        self.assertFalse(data["manifest_data"]["translation_preview"]["included"])
+        zip_path = Path(data["zip"])
+        self.assertTrue(zip_path.exists())
+
+        with ZipFile(zip_path) as zf:
+            names = set(zf.namelist())
+            self.assertIn("raw/source.txt", names)
+            self.assertIn("canonical/document.json", names)
+            self.assertIn("working/review_state.json", names)
+            self.assertIn("working/drafts.json", names)
+            self.assertIn("QC_REPORT.json", names)
+            self.assertIn("README_EXPORT.txt", names)
+            self.assertFalse(any(name.startswith("working/translation_preview/") for name in names))
+            qc = json.loads(zf.read("QC_REPORT.json").decode("utf-8"))
+            self.assertEqual(qc["doc_id"], doc_id)
+
+        downloaded = self.client.get(f"/api/projects/{doc_id}/exports/{data['filename']}")
+        self.assertEqual(downloaded.status_code, 200)
+        self.assertEqual(downloaded.mimetype, "application/zip")
+        downloaded.close()
+
+    def test_export_with_translation_previews_includes_preview_files_and_downloads(self):
+        doc_id = "export_with_previews"
+        dataset = self._make_txt_project(doc_id)
+        chapter_id = dataset["chapters"][0]["chapter_id"]
+        block = next(item for item in dataset["blocks"] if item["block_type"] != "heading")
+        preview = self._good_translation_preview(doc_id, chapter_id, block["block_id"])
+
+        input_response = self.client.get(f"/api/projects/{doc_id}/translation-preview/input?chapter_id={chapter_id}")
+        self.assertEqual(input_response.status_code, 200, input_response.get_json())
+
+        imported = self.client.post(f"/api/projects/{doc_id}/translation-preview/runs", json={"preview": preview})
+        self.assertEqual(imported.status_code, 201, imported.get_json())
+        run_id = imported.get_json()["data"]["run"]["run_id"]
+
+        exported = self.client.post(f"/api/projects/{doc_id}/export-with-previews", json={"user": "tester"})
+        self.assertEqual(exported.status_code, 201, exported.get_json())
+        data = exported.get_json()["data"]
+        self.assertEqual(data["manifest_data"]["kind"], "dataset_plus_translation_previews")
+        self.assertTrue(data["manifest_data"]["translation_preview"]["preview_only_not_gold"])
+        self.assertEqual(data["manifest_data"]["translation_preview"]["counts"]["inputs"], 1)
+        self.assertEqual(data["manifest_data"]["translation_preview"]["counts"]["runs"], 1)
+        zip_path = Path(data["zip"])
+        self.assertTrue(zip_path.exists())
+
+        with ZipFile(zip_path) as zf:
+            names = set(zf.namelist())
+            self.assertIn("raw/source.txt", names)
+            self.assertIn("canonical/document.json", names)
+            self.assertIn("working/review_state.json", names)
+            self.assertIn("QC_REPORT.json", names)
+            self.assertIn(f"working/translation_preview/input/{chapter_id}_input.json", names)
+            self.assertIn(f"working/translation_preview/runs/{run_id}.json", names)
+            self.assertIn("README_EXPORT.txt", names)
+
+        downloaded = self.client.get(f"/api/projects/{doc_id}/exports/{data['filename']}")
+        self.assertEqual(downloaded.status_code, 200)
+        self.assertEqual(downloaded.mimetype, "application/zip")
+        self.assertGreater(len(downloaded.data), 100)
+        downloaded.close()
+
     def test_translation_preview_bad_block_id_rejects(self):
         doc_id = "translation_preview_bad_block"
         dataset = self._make_txt_project(doc_id)

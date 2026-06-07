@@ -156,10 +156,68 @@ function joinLocalPath(root, ...parts) {
   return [root.replace(/[\\/]+$/, ""), ...parts].filter(Boolean).join(sep);
 }
 
-function TopBar({ docId, dirty, lastSaved, onValidate, onExport, onFreeze, onUndo, onRedo, history, freezeReady, freezeReasons, previewReadOnly }) {
+function safeFilePart(value) {
+  return String(value || "export").replace(/[^A-Za-z0-9_.-]+/g, "_").replace(/^_+|_+$/g, "") || "export";
+}
+
+function downloadTextFile(filename, text, type = "text/plain;charset=utf-8") {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function downloadAppJsonFile(filename, data) {
+  downloadTextFile(filename, JSON.stringify(data, null, 2), "application/json;charset=utf-8");
+}
+
+function downloadBlobFile(filename, blob) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function pickZipSaveHandle(suggestedName) {
+  if (!window.showSaveFilePicker) return null;
+  try {
+    return await window.showSaveFilePicker({
+      suggestedName,
+      types: [{ description: "ZIP archive", accept: { "application/zip": [".zip"] } }],
+    });
+  } catch (err) {
+    if (err?.name === "AbortError") return "aborted";
+    return null;
+  }
+}
+
+async function writeBlobToHandle(handle, blob) {
+  const writable = await handle.createWritable();
+  await writable.write(blob);
+  await writable.close();
+}
+
+function TopBar({ docId, dirty, lastSaved, onValidate, onExportOption, onFreeze, onUndo, onRedo, history, freezeReady, freezeReasons, previewReadOnly, canExportPreview }) {
+  const [exportOpen, setExportOpen] = useState(false);
   const canUndo = !!history?.can_undo && !dirty && !previewReadOnly;
   const canRedo = !!history?.can_redo && !dirty && !previewReadOnly;
   const readOnlyTip = "Disabled in Translation Preview read-only view.";
+  const packageDisabled = false;
+  const qcDisabled = false;
+  const previewDisabled = !canExportPreview;
+  function chooseExport(kind) {
+    setExportOpen(false);
+    onExportOption(kind);
+  }
   return (
     <div className="topbar">
       <div className="tb-left">
@@ -191,7 +249,31 @@ function TopBar({ docId, dirty, lastSaved, onValidate, onExport, onFreeze, onUnd
         <span className="tb-sep" />
         {previewReadOnly && <span className="preview-top-badge"><Ic.eye size={12} />preview read-only</span>}
         <button className="btn" disabled={previewReadOnly} data-tip={previewReadOnly ? readOnlyTip : ""} onClick={onValidate}><Ic.checkCircle size={13} />Validate</button>
-        <button className="btn" disabled={previewReadOnly} data-tip={previewReadOnly ? readOnlyTip : ""} onClick={onExport}><Ic.upload size={13} />Export</button>
+        <div className="export-menu-wrap">
+          <button className="btn" onClick={() => setExportOpen(v => !v)} disabled={!docId} data-tip={!docId ? "Open a project first." : ""}>
+            <Ic.upload size={13} />Export<Ic.chevDown size={11} />
+          </button>
+          {exportOpen && (
+            <div className="export-menu">
+              <button disabled={packageDisabled} onClick={() => chooseExport("package")}>
+                <Ic.layers size={13} />
+                <span><b>Dataset package</b><em>Source + dataset + working state + QC</em></span>
+              </button>
+              <button disabled={qcDisabled} onClick={() => chooseExport("qc")}>
+                <Ic.checkCircle size={13} />
+                <span><b>QC report</b><em>Counts, validation, review, freeze gates</em></span>
+              </button>
+              <button onClick={() => chooseExport("dataset-previews")}>
+                <Ic.book size={13} />
+                <span><b>Dataset + all previews</b><em>Dataset package + all translated previews</em></span>
+              </button>
+              <button disabled={previewDisabled} onClick={() => chooseExport("preview")}>
+                <Ic.eye size={13} />
+                <span><b>Translation preview</b><em>Current preview run only, not gold</em></span>
+              </button>
+            </div>
+          )}
+        </div>
         <div className="tip tip-left" data-tip={previewReadOnly ? readOnlyTip : freezeReady ? "Create a versioned snapshot after validation and review gates pass" : "Blocked: " + freezeReasons.join(" · ")}>
           <button className="btn primary" disabled={previewReadOnly || !freezeReady} onClick={onFreeze}>
             <Ic.snow size={13} />Freeze
@@ -214,7 +296,7 @@ function PreviewRightPanel({ docInfo, block }) {
       </div>
       <div className="preview-info-card">
         <p>This view only compares source blocks with a stored preview run.</p>
-        <p>No annotation, reference, export, freeze, or review action is available here.</p>
+        <p>No annotation, reference, freeze, or review action is available here. Export is limited to preview-safe downloads.</p>
       </div>
       <div className="preview-info-list">
         <div><span>doc_id</span><b className="mono">{docInfo?.doc_id || ""}</b></div>
@@ -269,6 +351,7 @@ function App() {
   const [modal, setModal] = useState(null);
   const [dirty, setDirty] = useState(false);
   const [schemaMigrating, setSchemaMigrating] = useState(false);
+  const [currentPreviewRun, setCurrentPreviewRun] = useState(null);
   const [lastSaved, setLastSaved] = useState("just now");
   const [loading, setLoading] = useState(true);
   const [bootError, setBootError] = useState(null);
@@ -582,6 +665,10 @@ function App() {
   if (missingSummaries > 0) freezeReasons.push(`${missingSummaries} chapter summar${missingSummaries > 1 ? "ies" : "y"} missing`);
   if (requiredMissing.length > 0) freezeReasons.push(`${requiredMissing.length} required source/provenance field${requiredMissing.length > 1 ? "s" : ""} missing`);
   const freezeReady = freezeReasons.length === 0;
+
+  useEffect(() => {
+    if (centerMode !== "preview") setCurrentPreviewRun(null);
+  }, [centerMode]);
 
   const refForBlock = block ? references.find(r => r.block_id === block.block_id) : null;
   const rpCounts = {
@@ -1186,7 +1273,124 @@ function App() {
   }
 
   function jumpTo(e) { if (e.block_id) { selectBlock(e.block_id); toast(`Jumped to ${e.block_id}`, "info"); } }
-  function doExport() { setModal({ kind: "export" }); }
+  function buildQcExport() {
+    return {
+      kind: "qc_report",
+      doc_id: docInfo?.doc_id || activeDocId,
+      generated_at: new Date().toISOString(),
+      schema_version: docInfo?.schema_version || "",
+      metadata: docInfo?.metadata || {},
+      counts: {
+        chapters: chapters.length,
+        blocks: blocks.length,
+        glossary_terms: glossary.length,
+        entities: entities.length,
+        entity_relations: relations.length,
+        chapter_summaries: summaries.length,
+        references: references.length,
+        reviewed_references: references.filter(r => ["reviewed", "locked"].includes(r.status)).length,
+      },
+      review: {
+        reviewed_blocks: stats.reviewed,
+        unreviewed_blocks: unreviewed,
+        blocks_needing_retag: needsRetag,
+        stale_spans: staleCount,
+        missing_chapter_summaries: missingSummaries,
+        draft_references: draftRefs,
+      },
+      validation: {
+        error_count: errorCount,
+        warning_count: errors.filter(e => e.severity === "warning").length,
+        items: errors,
+      },
+      freeze: {
+        ready: freezeReady,
+        reasons: freezeReasons,
+        required_missing: requiredMissing,
+      },
+    };
+  }
+  function exportQcReport() {
+    const report = buildQcExport();
+    downloadAppJsonFile(`${safeFilePart(report.doc_id)}_qc_report.json`, report);
+    toast("QC report exported", "good", `${safeFilePart(report.doc_id)}_qc_report.json`);
+  }
+  function exportPreviewRun() {
+    const run = currentPreviewRun?.run;
+    if (!run) {
+      toast("No preview run loaded", "bad", "Open Preview and select a run first.");
+      return;
+    }
+    const chapterId = run.chapter_id || currentPreviewRun.chapter_id || "chapter";
+    const payload = {
+      kind: "translation_preview_export",
+      exported_at: new Date().toISOString(),
+      notice: "Preview only. This is not gold and must not be promoted into manual_reference_subset.",
+      run,
+    };
+    const filename = `${safeFilePart(run.doc_id || docInfo?.doc_id)}_${safeFilePart(chapterId)}_${safeFilePart(run.run_id)}_preview.json`;
+    downloadAppJsonFile(filename, payload);
+    toast("Translation preview exported", "good", filename);
+  }
+  async function exportDatasetPackage() {
+    const suggestedName = `${safeFilePart(docInfo?.doc_id || activeDocId)}_dataset_package.zip`;
+    const saveHandle = await pickZipSaveHandle(suggestedName);
+    if (saveHandle === "aborted") {
+      toast("Export cancelled", "info");
+      return;
+    }
+    touchStart();
+    try {
+      const result = await API.exportProject(activeDocId, { user: currentUser() });
+      const filename = result.filename || String(result.zip || suggestedName).split(/[\\/]/).pop() || suggestedName;
+      const blob = await API.downloadExport(activeDocId, filename);
+      if (saveHandle) {
+        await writeBlobToHandle(saveHandle, blob);
+      } else {
+        downloadBlobFile(filename, blob);
+      }
+      touchDone();
+      toast("Exported dataset package", "good", `${filename} Â· saved in project exports Â· QC included`);
+    } catch (err) {
+      touchDone();
+      toast("Dataset package export failed", "bad", errorMessage(err));
+    }
+  }
+  async function exportDatasetWithPreviews() {
+    const suggestedName = `${safeFilePart(docInfo?.doc_id || activeDocId)}_dataset_plus_previews.zip`;
+    const saveHandle = await pickZipSaveHandle(suggestedName);
+    if (saveHandle === "aborted") {
+      toast("Export cancelled", "info");
+      return;
+    }
+    touchStart();
+    try {
+      const result = await API.exportProjectWithPreviews(activeDocId, { user: currentUser() });
+      const filename = result.filename || String(result.zip || suggestedName).split(/[\\/]/).pop() || suggestedName;
+      const blob = await API.downloadExport(activeDocId, filename);
+      if (saveHandle) {
+        await writeBlobToHandle(saveHandle, blob);
+      } else {
+        downloadBlobFile(filename, blob);
+      }
+      touchDone();
+      const counts = result.manifest_data?.translation_preview?.counts || {};
+      toast(
+        "Exported dataset + previews",
+        "good",
+        `${filename} · saved in project exports · runs ${counts.runs || 0}, inputs ${counts.inputs || 0}`
+      );
+    } catch (err) {
+      touchDone();
+      toast("Dataset + preview export failed", "bad", errorMessage(err));
+    }
+  }
+  function doExport(kind = "package") {
+    if (kind === "qc") return exportQcReport();
+    if (kind === "preview") return exportPreviewRun();
+    if (kind === "dataset-previews") return exportDatasetWithPreviews();
+    return exportDatasetPackage();
+  }
   function doFreeze() { setModal({ kind: "freeze" }); }
 
   async function runUndo() {
@@ -1313,9 +1517,9 @@ function App() {
   return (
     <div className="app">
       <TopBar docId={docInfo.doc_id} dirty={dirty} lastSaved={lastSaved}
-        onValidate={runValidate} onExport={doExport} onFreeze={doFreeze}
+        onValidate={runValidate} onExportOption={doExport} onFreeze={doFreeze}
         onUndo={runUndo} onRedo={runRedo} history={historyState}
-        freezeReady={freezeReady} freezeReasons={freezeReasons} previewReadOnly={centerMode === "preview"} />
+        freezeReady={freezeReady} freezeReasons={freezeReasons} previewReadOnly={centerMode === "preview"} canExportPreview={!!currentPreviewRun?.run} />
       <div className="workspace">
         <LeftSidebar docInfo={docInfo} projects={projects} blocks={visibleBlocks} chapters={chapters} review={review}
           annoSet={annoSet} selectedId={selectedId} onSelect={selectBlock}
@@ -1329,7 +1533,7 @@ function App() {
           getSpansForBlock={getSpansForBlock} linkIndex={linkIndex} onSelectBlock={selectBlock} onNextUnreviewed={nextUnreviewedBlock}
           onEdit={() => setEditing(true)} onCommitClean={commitClean} onCancelEdit={() => setEditing(false)}
           onChangeType={changeType} onToggleOpening={() => toggleOpening(selectedId)} onToggleFlag={(flag) => toggleFlag(flag, selectedId)} onMarkReviewed={markReviewed}
-          onAddGlossary={addGlossary} onAddEntity={addEntity} />
+          onAddGlossary={addGlossary} onAddEntity={addEntity} onPreviewRunChange={setCurrentPreviewRun} />
         {centerMode === "preview" ? (
           <PreviewRightPanel docInfo={docInfo} block={block} />
         ) : (

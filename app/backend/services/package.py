@@ -1,3 +1,4 @@
+import json
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -117,22 +118,209 @@ def _write_zip(project_path: Path, zip_path: Path, include_working: bool, manife
         zf.write(manifest_path, manifest_path.name)
 
 
+def _add_tree(zf: zipfile.ZipFile, root: Path, arc_root: str, skip_dirs: set[str] | None = None) -> int:
+    if not root.exists():
+        return 0
+    count = 0
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            rel = path.relative_to(root)
+            if skip_dirs and any(part in skip_dirs for part in rel.parts):
+                continue
+            zf.write(path, f"{arc_root}/{rel.as_posix()}")
+            count += 1
+    return count
+
+
+def _block_ids(document: dict[str, Any]) -> list[str]:
+    return [
+        str(block.get("block_id"))
+        for chapter in document.get("chapters", [])
+        for block in chapter.get("blocks", [])
+        if block.get("block_id")
+    ]
+
+
+def _qc_report(project_path: Path, validation: dict[str, Any] | None = None) -> dict[str, Any]:
+    validation = validation or run_validator(_canonical(project_path))
+    document = _document(project_path)
+    review = _review_state(project_path)
+    block_ids = _block_ids(document)
+    block_states = review.get("blocks", {})
+    reviewed = [bid for bid in block_ids if block_states.get(bid, {}).get("reviewed")]
+    needs_retag = [bid for bid in block_ids if block_states.get(bid, {}).get("needs_retag")]
+    summaries = read_jsonl(_canonical(project_path) / DATASET_FILES["chapter_summaries"])
+    references = read_jsonl(_canonical(project_path) / DATASET_FILES["manual_reference_subset"])
+    drafts = draft_references(project_path)
+    freeze_blockers, _freeze_validation = freeze_reasons(project_path)
+    return {
+        "kind": "qc_report",
+        "doc_id": project_path.name,
+        "generated_at": _now_iso(),
+        "schema_version": document.get("schema_version"),
+        "metadata": document.get("metadata", {}),
+        "validation": {
+            "ok": bool(validation.get("ok")),
+            "counts": validation.get("counts", {}),
+            "errors": validation.get("errors", []),
+            "warnings": validation.get("warnings", []),
+        },
+        "review": {
+            "blocks": len(block_ids),
+            "reviewed_blocks": len(reviewed),
+            "unreviewed_blocks": max(len(block_ids) - len(reviewed), 0),
+            "blocks_needing_retag": len(needs_retag),
+        },
+        "annotations": {
+            "glossary_terms": len(read_jsonl(_canonical(project_path) / DATASET_FILES["glossary"])),
+            "entities": len(read_jsonl(_canonical(project_path) / DATASET_FILES["entities"])),
+            "entity_relations": len(read_jsonl(_canonical(project_path) / DATASET_FILES["entity_relations"])),
+            "chapter_summaries": len(summaries),
+        },
+        "references": {
+            "canonical": len(references),
+            "reviewed_or_locked": len([row for row in references if row.get("status") in REFERENCE_STATUSES]),
+            "drafts": len(drafts),
+        },
+        "freeze": {
+            "ready": not freeze_blockers,
+            "blockers": freeze_blockers,
+        },
+    }
+
+
+def _add_project_state(zf: zipfile.ZipFile, project_path: Path, include_translation_previews: bool) -> dict[str, int]:
+    counts = {"root_files": 0, "canonical_files": 0, "working_files": 0, "other_files": 0}
+    for path in sorted(project_path.iterdir()):
+        if path.name == "exports":
+            continue
+        if path.is_file():
+            zf.write(path, path.name)
+            counts["root_files"] += 1
+        elif path.is_dir() and path.name not in {"canonical", "working"}:
+            counts["other_files"] += _add_tree(zf, path, path.name)
+    counts["canonical_files"] = _add_tree(zf, _canonical(project_path), "canonical")
+    skip_working = set() if include_translation_previews else {"translation_preview"}
+    counts["working_files"] = _add_tree(zf, project_path / "working", "working", skip_dirs=skip_working)
+    return counts
+
+
+def _write_project_package_zip(
+    project_path: Path,
+    zip_path: Path,
+    manifest: dict[str, Any],
+    include_translation_previews: bool,
+    validation: dict[str, Any],
+) -> None:
+    manifest_path = zip_path.with_name(f"{zip_path.stem}_manifest.json")
+    write_json_atomic(manifest_path, manifest)
+    qc_report = _qc_report(project_path, validation)
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        file_counts = _add_project_state(zf, project_path, include_translation_previews=include_translation_previews)
+        preview_counts = _preview_counts(project_path) if include_translation_previews else {"inputs": 0, "agent_outputs": 0, "runs": 0}
+        preview_count = sum(preview_counts.values())
+        zf.writestr("QC_REPORT.json", json.dumps(qc_report, ensure_ascii=False, indent=2) + "\n")
+        readme = "\n".join([
+            "AI-LAB project export",
+            "",
+            "This package contains the current source files, canonical dataset, working state, and QC_REPORT.json.",
+            "exports/ is intentionally excluded to avoid nesting old export archives.",
+            "working/translation_preview/ is included only for dataset_plus_translation_previews exports.",
+            "Translation preview data is not gold and must not be treated as manual_reference_subset.",
+            f"root_file_count={file_counts['root_files']}",
+            f"canonical_file_count={file_counts['canonical_files']}",
+            f"working_file_count={file_counts['working_files']}",
+            f"other_file_count={file_counts['other_files']}",
+            f"translation_preview_file_count={preview_count}",
+            "",
+        ])
+        zf.writestr("README_EXPORT.txt", readme)
+        zf.write(manifest_path, manifest_path.name)
+
+
+def _preview_counts(project_path: Path) -> dict[str, int]:
+    root = project_path / "working" / "translation_preview"
+    return {
+        "inputs": len(list((root / "input").glob("*.json"))) if (root / "input").exists() else 0,
+        "agent_outputs": len(list((root / "agent_outputs").glob("*.json"))) if (root / "agent_outputs").exists() else 0,
+        "runs": len(list((root / "runs").glob("*.json"))) if (root / "runs").exists() else 0,
+    }
+
+
 def export_project(project_path: Path, user: str = "local") -> dict[str, Any]:
     doc_id = project_path.name
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    zip_path = project_path / "exports" / f"{doc_id}_export_{stamp}.zip"
+    zip_path = project_path / "exports" / f"{doc_id}_dataset_package_{stamp}.zip"
     validation = run_validator(_canonical(project_path))
     manifest = {
         "doc_id": doc_id,
-        "kind": "export",
+        "kind": "dataset_package",
         "created_at": _now_iso(),
         "validator_ok": bool(validation.get("ok")),
         "counts": validation.get("counts", {}),
         "files": list(DATASET_FILES.values()),
+        "qc_report": {"included": True, "path": "QC_REPORT.json"},
+        "project_state": {
+            "included": True,
+            "path": "./",
+            "excluded": ["exports/", "working/translation_preview/"],
+        },
+        "translation_preview": {
+            "included": False,
+            "preview_only_not_gold": True,
+            "counts": {"inputs": 0, "agent_outputs": 0, "runs": 0},
+        },
     }
-    _write_zip(project_path, zip_path, include_working=True, manifest=manifest)
+    _write_project_package_zip(project_path, zip_path, manifest, include_translation_previews=False, validation=validation)
     log_event(project_path, "export", {"path": str(zip_path), "validator_ok": manifest["validator_ok"]}, user)
-    return {"zip": str(zip_path), "manifest": str(zip_path.with_name(f"{zip_path.stem}_manifest.json")), "manifest_data": manifest}
+    return {
+        "zip": str(zip_path),
+        "filename": zip_path.name,
+        "download_url": f"/projects/{doc_id}/exports/{zip_path.name}",
+        "manifest": str(zip_path.with_name(f"{zip_path.stem}_manifest.json")),
+        "manifest_data": manifest,
+    }
+
+
+def export_project_with_previews(project_path: Path, user: str = "local") -> dict[str, Any]:
+    doc_id = project_path.name
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_path = project_path / "exports" / f"{doc_id}_dataset_plus_previews_{stamp}.zip"
+    validation = run_validator(_canonical(project_path))
+    preview_counts = _preview_counts(project_path)
+    manifest = {
+        "doc_id": doc_id,
+        "kind": "dataset_plus_translation_previews",
+        "created_at": _now_iso(),
+        "validator_ok": bool(validation.get("ok")),
+        "counts": validation.get("counts", {}),
+        "files": list(DATASET_FILES.values()),
+        "qc_report": {"included": True, "path": "QC_REPORT.json"},
+        "project_state": {
+            "included": True,
+            "path": "./",
+            "excluded": ["exports/"],
+        },
+        "translation_preview": {
+            "included": True,
+            "preview_only_not_gold": True,
+            "counts": preview_counts,
+            "path": "working/translation_preview/",
+        },
+    }
+    _write_project_package_zip(project_path, zip_path, manifest, include_translation_previews=True, validation=validation)
+    log_event(project_path, "export_with_previews", {
+        "path": str(zip_path),
+        "validator_ok": manifest["validator_ok"],
+        "translation_preview": preview_counts,
+    }, user)
+    return {
+        "zip": str(zip_path),
+        "filename": zip_path.name,
+        "download_url": f"/projects/{doc_id}/exports/{zip_path.name}",
+        "manifest": str(zip_path.with_name(f"{zip_path.stem}_manifest.json")),
+        "manifest_data": manifest,
+    }
 
 
 def freeze_project(project_path: Path, user: str = "local") -> dict[str, Any]:

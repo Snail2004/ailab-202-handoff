@@ -1,7 +1,9 @@
-from flask import Blueprint, request
+from pathlib import Path
+
+from flask import Blueprint, request, send_file
 
 from routes.common import error, ok
-from services.package import export_project, freeze_project
+from services.package import export_project, export_project_with_previews, freeze_project
 from services.workspace import ProjectError, get_project_path, has_project
 
 
@@ -24,6 +26,33 @@ def export_route(doc_id: str):
         if not has_project(doc_id):
             return error("missing_project", "Project not found", 404)
         return ok(export_project(get_project_path(doc_id), _user(payload)), status=201)
+    except ProjectError as exc:
+        return error("export_error", str(exc), 400)
+
+
+@bp.post("/projects/<doc_id>/export-with-previews")
+def export_with_previews_route(doc_id: str):
+    payload = _payload()
+    try:
+        if not has_project(doc_id):
+            return error("missing_project", "Project not found", 404)
+        return ok(export_project_with_previews(get_project_path(doc_id), _user(payload)), status=201)
+    except ProjectError as exc:
+        return error("export_error", str(exc), 400)
+
+
+@bp.get("/projects/<doc_id>/exports/<path:filename>")
+def export_download_route(doc_id: str, filename: str):
+    try:
+        if not has_project(doc_id):
+            return error("missing_project", "Project not found", 404)
+        safe_name = Path(filename).name
+        if safe_name != filename or not safe_name.endswith(".zip"):
+            return error("invalid_export_name", "Invalid export filename.", 400)
+        path = get_project_path(doc_id) / "exports" / safe_name
+        if not path.exists():
+            return error("missing_export", "Export file not found.", 404)
+        return send_file(path, as_attachment=True, download_name=safe_name, mimetype="application/zip")
     except ProjectError as exc:
         return error("export_error", str(exc), 400)
 

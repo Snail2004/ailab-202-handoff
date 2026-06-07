@@ -61,6 +61,25 @@
     return payload.data;
   }
 
+  async function requestBlob(path) {
+    let response;
+    try {
+      response = await fetch(baseUrl() + path);
+    } catch (err) {
+      throw new ApiError("Backend offline or unreachable.", {
+        ok: false,
+        errors: [{ code: "network_error", message: err.message || String(err) }],
+      }, 0);
+    }
+    if (!response.ok) {
+      let payload = null;
+      try { payload = await response.json(); } catch (_err) {}
+      const first = payload?.errors?.[0];
+      throw new ApiError(first?.message || "Download failed.", payload, response.status);
+    }
+    return response.blob();
+  }
+
   const API = {
     ApiError,
     get baseUrl() { return baseUrl(); },
@@ -120,6 +139,8 @@
     reviewReference: (docId, referenceId, payload) => request(`/projects/${encodeURIComponent(docId)}/references/${encodeURIComponent(referenceId)}/review`, { method: "POST", body: payload }),
     lockReference: (docId, referenceId, payload) => request(`/projects/${encodeURIComponent(docId)}/references/${encodeURIComponent(referenceId)}/lock`, { method: "POST", body: payload || {} }),
     exportProject: (docId, payload) => request(`/projects/${encodeURIComponent(docId)}/export`, { method: "POST", body: payload || {} }),
+    exportProjectWithPreviews: (docId, payload) => request(`/projects/${encodeURIComponent(docId)}/export-with-previews`, { method: "POST", body: payload || {} }),
+    downloadExport: (docId, filename) => requestBlob(`/projects/${encodeURIComponent(docId)}/exports/${encodeURIComponent(filename)}`),
     freezeProject: (docId, payload) => request(`/projects/${encodeURIComponent(docId)}/freeze`, { method: "POST", body: payload || {} }),
   };
 

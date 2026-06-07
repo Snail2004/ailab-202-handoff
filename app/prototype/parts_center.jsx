@@ -129,7 +129,7 @@ function EditorToolbar({
 
       <div className="ed-tb-right">
         {readOnlyPreview ? (
-          <span className="preview-toolbar-note"><Ic.lock size={12} />No save, review, export, or promote actions in this view.</span>
+          <span className="preview-toolbar-note"><Ic.lock size={12} />Preview export only. No save, review, or promote actions in this view.</span>
         ) : mode !== "block" && (
           <button className="btn sm" onClick={onNextUnreviewed}>
             <Ic.arrowRight size={13} />Next unreviewed
@@ -821,7 +821,7 @@ function countMojibakeMarks(text) {
 }
 
 function TranslationPreviewView({
-  docInfo, chapters = [], allBlocks = [], chapter, selectedId, onSelectBlock, linkIndex
+  docInfo, chapters = [], allBlocks = [], chapter, selectedId, onSelectBlock, linkIndex, onPreviewRunChange
 }) {
   const [runs, setRuns] = React.useState([]);
   const [selectedChapterId, setSelectedChapterId] = React.useState(chapter?.chapter_id || chapters[0]?.chapter_id || "");
@@ -839,6 +839,12 @@ function TranslationPreviewView({
   const [importWarnings, setImportWarnings] = React.useState([]);
   const importFileRef = React.useRef(null);
   const docId = docInfo?.doc_id || "";
+
+  React.useEffect(() => {
+    if (typeof onPreviewRunChange === "function") {
+      onPreviewRunChange(loadedRun ? { run: loadedRun, chapter_id: selectedChapterId } : null);
+    }
+  }, [loadedRun, selectedChapterId, onPreviewRunChange]);
 
   React.useEffect(() => {
     const next = chapter?.chapter_id || chapters[0]?.chapter_id || "";
@@ -1249,7 +1255,7 @@ function CenterEditor({
   review, selectedId, getSpansForBlock, linkIndex, onSelectBlock, onNextUnreviewed,
   onEdit, onCommitClean, onCancelEdit,
   onChangeType, onToggleOpening, onToggleFlag, onMarkReviewed,
-  onAddGlossary, onAddEntity,
+  onAddGlossary, onAddEntity, onPreviewRunChange,
 }) {
   const [hoverInfo, setHoverInfo] = React.useState(null);
   const chapterTitle = chapter?.title || chapter?.chapter_title || block.chapter_id;
@@ -1277,6 +1283,7 @@ function CenterEditor({
           selectedId={selectedId}
           onSelectBlock={onSelectBlock}
           linkIndex={linkIndex}
+          onPreviewRunChange={onPreviewRunChange}
         />
       ) : mode !== "block" ? (
         <ChapterStream
